@@ -9,10 +9,14 @@ protocol and is useless outside the WIRES-X software as shipped.
 
 This script talks that protocol on one side and emulates a Kenwood
 TS-2000 on the other, so the box can be driven by flrig, fldigi,
-WSJT-X, Direwolf or anything else that speaks CAT.
+Direwolf or anything else that speaks CAT.
 
-    fldigi / WSJT-X -> flrig -> COM10 =[com0com]= COM11 -> this script
+    fldigi / Direwolf -> flrig -> COM10 =[com0com]= COM11 -> this script
     -> COM7 -> HRI-200 -> radio
+
+The node radio is an FM set, so this covers the modes that work over
+FM - packet and APRS, SSTV, the fldigi modes. It is not an SSB rig,
+and the weak-signal modes that assume one do not belong here.
 
     In flrig: Rig = TS-2000, Port = COM10, baud rate irrelevant.
 

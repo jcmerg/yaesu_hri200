@@ -9,11 +9,15 @@ project documents that protocol and provides two bridges over it.
 for digital modes, by making it look like a Kenwood TS-2000 to CAT-aware
 software:
 
-    fldigi / WSJT-X → flrig → COM10 =[com0com]= COM11 → hri200_cat.py
-                                                     → COM7 → HRI-200 → radio
+    fldigi / Direwolf → flrig → COM10 =[com0com]= COM11 → hri200_cat.py
+                                                       → COM7 → HRI-200 → radio
 
 Audio is untouched: the HRI-200 registers as a standard USB audio
 device, so pick it directly in your application.
+
+The radio on RADIO 1 is an FM set, so this covers what works over FM:
+packet and APRS, SSTV, the fldigi modes. There is no SSB in the path,
+and the weak-signal modes that assume it do not belong here.
 
 **`hri200_ysf.py`** carries a YSF reflector to the radio in C4FM, with no
 WIRES-X in the path:
