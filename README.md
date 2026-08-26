@@ -285,10 +285,21 @@ transmitting station. `FDQTv` is the radio ID of the
 transmitting set.
 
 `D1G` is the read-direction twin of `D1F`: the same `21002000` prefix,
-five 10-character fields, then a tail with the radio ID, a counter and
-`<redacted>` or `<redacted>`. Those bytes match the DT1/DT2 constants YSF
-uses for position data, and the longer 108-character variant carries a
-further block that is not plain ASCII.
+five 10-character fields, then a tail with the radio ID, a counter and a
+position field. The 108-character variant carries twelve bytes more than
+the 82-character one, and those hold the position of the transmitting
+station when it has GPS switched on. The low nibbles of the first five
+are the latitude as decimal digits, degrees then minutes to one place,
+which places a station within a few hundred metres. The longitude is in
+the bytes that follow but does not come out of the same rule, so how it
+is packed is still open.
+
+**The whole field is zeroed in both captures.** Where the position ends
+and a format marker begins is not settled: the four bytes ahead of it are
+constant for one radio and different for another, which is what a coarse
+position would also look like. Rather than argue it, all of it is treated
+as position. That is the only redaction in either file; everything else
+is as it came off the wire.
 
 ### R6423 — device identity
 
