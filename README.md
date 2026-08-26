@@ -99,10 +99,11 @@ needs neither the hardware nor pyserial.
 | `--prefill` | `5` | frames buffered before playout starts |
 | `--dry-run` | off | print frames, open no port |
 
-**Only the reflector reaches the radio.** Nothing goes back. Building the
-other direction needs a capture of what the HRI-200 sends to the PC when
-someone talks on the node frequency, and no such capture exists — see
-[Known gaps](#known-gaps).
+**Only the reflector reaches the radio.** Nothing goes back yet. What the
+box sends when someone talks on the node frequency is now captured and
+understood — see [the read direction](#the-read-direction) — but passing
+it on means building a whole 120-byte frame, and the FICH and DCH
+encoders for that are still missing.
 
 Header and terminator frames carry no voice and have to be kept out of
 the stream. Rather than decode the FICH for it, the gateway runs the
@@ -124,8 +125,10 @@ source.
 directions. Without the leading SOH the box discards the frame
 silently — no reply, no error.
 
-The device never transmits unsolicited. Every reply follows a command
-by roughly 30 ms.
+Replies follow a command by roughly 30 ms. The box also speaks on its
+own while the radio is receiving — `D1P`, `D1H`, `D1R` and `D1G` all
+arrived in a capture whose only outgoing traffic was `P010000` once a
+second.
 
 **Cold start.** After opening the port the original software waits
 about seven seconds (6.90 s and 7.08 s in two captures) before the
@@ -150,11 +153,17 @@ D1B00010   → D1B00010
 | `D1V0000` | radio type and firmware |
 | `P010010` | shut down |
 
-In the status reply `YY` ending in `5` means transmitting and `00`
-means receiving. `XX` is an RX level, observed range 0..4 per digit.
+In the status reply `YY` ending in `5` means transmitting. `00` is idle:
+during actual reception it read `11` and then `31` within 200 ms, which
+looks like carrier first and digital sync after, though only one capture
+shows it. `XX` is a signal level and reaches at least `AA`; the 0..4 seen
+earlier was the range of one quiet capture, not the field.
 
-`D1P` frames arrive unsolicited on state changes and can be used
-instead of polling `D1C0000`.
+`D1P` carries the same body as the `D1C` reply and arrives unsolicited on
+state changes, so polling `D1C0000` is not needed.
+
+The reply to `P010000` turns from `B0 0    0000000` into
+`B1 0    0000000` while a signal is present.
 
 ### D1M — frequency and channel command
 
@@ -231,6 +240,42 @@ bytes of DCH ahead of each block — are simply dropped, which is all
 `hri200_ysf.py` does. Going the other way they have to be generated, and
 the callsigns for the DCH would come from `D1F`.
 
+### The read direction
+
+What the box sends while the radio receives mirrors the write direction
+one for one. Voice arrives as `D1R`, in the same frame as `D1E` down to
+the length field, the constant `2`, the 16-bit counter and its step of
+five:
+
+```
+D1R 0089 2 <counter, 4 hex digits> 00 <130 hex characters>
+```
+
+All 50 frames captured are 144 characters, all 250 blocks pass the
+triplet test, and the counter steps by exactly five with no jitter across
+both transmissions. Nothing about the payload differs from the write
+direction, so the same 65 bytes go into a YSF frame the same way.
+
+Two further frames come with it.
+
+`D1H` carries the DCH callsign fields, one pair per frame:
+
+```
+D1H 001E 21002000 <slot> <10 characters> <10 characters>
+```
+
+`slot` is two digits, the first `1` to `3` and the second `0` to `2`,
+which cycles through the fields the way the YSF data channel does. The
+first field held `*****FDQTv` and the second `DL4JC     `, the
+transmitting station. `FDQTv` is five characters where a Yaesu radio ID
+sits, but nothing here confirms that reading.
+
+`D1G` is the read-direction twin of `D1F`: the same `21002000` prefix,
+five 10-character fields, then a tail with the radio ID, a counter and
+`<redacted>` or `<redacted>`. Those bytes match the DT1/DT2 constants YSF
+uses for position data, and the longer 108-character variant carries a
+further block that is not plain ASCII.
+
 ### R6423 — device identity
 
 `R` + one format digit + ASCII-hex of a CSV line:
@@ -250,10 +295,11 @@ leading fields were empty on the device used here.
   power setting.
 - Position `27:30` of the **TX** block stayed `000` while the RX block
   carried the DG-ID, so whether the two can differ is untested.
-- No capture so far contains the read direction, HRI-200 to PC. Every
-  frame recovered from the `.dmslog8` logs is a write. Without it the
-  path from the radio into a YSF network cannot be built — see
-  [Probing the read direction](#probing-the-read-direction).
+- The gateway still runs one way. The read direction is captured and
+  understood, but sending it on needs a 120-byte frame built from
+  scratch, and the FICH and DCH encoders for that are not written.
+- What the `slot` digits in `D1H` count, and how the tail of `D1G` is
+  laid out, is only sketched.
 - Whether the DCS code and the CTCSS tone can be set independently is
   untested; they were never changed at the same time.
 - Whether `D1M` actually retunes the radio, as opposed to only
