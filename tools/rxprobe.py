@@ -25,9 +25,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import hri200_cat
-from hri200_cat import EOT, SOH, HRI200
-from hri200_ysf import PAYLOAD_LENGTH, VCH_COUNT, VCH_LENGTH, is_voice
+try:
+    import hri200_cat
+    from hri200_cat import EOT, SOH, HRI200
+    from hri200_ysf import PAYLOAD_LENGTH, VCH_COUNT, VCH_LENGTH, is_voice
+except ImportError as exc:
+    sys.exit("%s\n\nThis needs hri200_cat.py and hri200_ysf.py in the "
+             "directory above it.\nCopy the repository, not the single "
+             "file." % exc)
 
 HEX_RUN = re.compile(r"[0-9A-Fa-f]{%d,}" % (2 * PAYLOAD_LENGTH))
 
