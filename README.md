@@ -252,7 +252,8 @@ leading fields were empty on the device used here.
   carried the DG-ID, so whether the two can differ is untested.
 - No capture so far contains the read direction, HRI-200 to PC. Every
   frame recovered from the `.dmslog8` logs is a write. Without it the
-  path from the radio into a YSF network cannot be built.
+  path from the radio into a YSF network cannot be built — see
+  [Probing the read direction](#probing-the-read-direction).
 - Whether the DCS code and the CTCSS tone can be set independently is
   untested; they were never changed at the same time.
 - Whether `D1M` actually retunes the radio, as opposed to only
@@ -275,6 +276,30 @@ python3 tools/dmslog.py capture.dmslog8 --only D1M
 
 Records appear twice, as IRP request and completion, and identical
 adjacent frames are collapsed.
+
+### Probing the read direction
+
+`tools/rxprobe.py` listens to the HRI-200 and logs everything it sends,
+which is the capture the read direction still needs. Start it, then key a
+second radio on the node frequency in C4FM.
+
+```
+python3 tools/rxprobe.py --hri COM7 --freq 144.85 --out rx.txt
+```
+
+It assumes nothing about how a receive frame is laid out. Every run of
+hex characters in every frame is cut into 65-byte windows at each offset
+and put through the triplet test, so voice is found whatever command
+letter, counter or header the box wrapped it in — and the offset it sat
+at is reported, which is the layout a gateway would need. On 300 random
+400-character hex runs, about 42000 windows, nothing was mistaken for
+voice, and neither were the `D1C` status reply or the `D1F` node frame.
+
+If nothing arrives at all, `--poll` asks with `D1C0000` at 10 Hz instead
+of idling at 1 Hz. Whether the box pushes voice or waits to be asked is
+open: the README says the device never transmits unsolicited, but `D1P`
+frames contradict that, and nobody transmitted on the node frequency
+while the existing captures were taken.
 
 ## Contributing
 
