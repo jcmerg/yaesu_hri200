@@ -75,9 +75,6 @@ INTERLEAVE_VCH = [4 * k + base for base in range(4) for k in range(26)]
 
 PAYLOAD_LENGTH = VCH_LENGTH * VCH_COUNT      # 65, what a D1E or D1R carries
 
-# What urfd puts in the DT2 slot; not ASCII.
-GPS_FILLER = bytes([0x52, 0x22, 0x61, 0x5F, 0x27, 0x03, 0x5E, 0x20, 0x20, 0x20])
-
 WHITENING = bytes([0x93, 0xD7, 0x51, 0x21, 0x9C, 0x2F, 0x6C, 0xD0, 0xEF,
                    0x0F, 0xF8, 0x3D, 0xF1, 0x73, 0x20, 0x94, 0xED, 0x1E,
                    0x7C, 0xD8])
@@ -321,6 +318,13 @@ def dch_for_frame(fn, source, gateway):
 
     The rotation follows what MMDVMHost and urfd emit, so a reflector sees
     the fields where it expects them.
+
+    Slot 6 is where a station with GPS puts its position. This sends the
+    blank that MMDVMHost uses for unassigned slots: the radio does report
+    its position, in the tail of a D1G frame, but forwarding it is not
+    something a gateway should decide on the operator's behalf. urfd fills
+    the slot with a fixed byte string instead, which looks like a position
+    lifted from somebody's capture, so it is not copied here.
     """
     if fn == 0:
         return "**********"
@@ -328,8 +332,6 @@ def dch_for_frame(fn, source, gateway):
         return source
     if fn in (2, 5):
         return gateway
-    if fn == 6:
-        return GPS_FILLER
     return " " * 10
 
 
