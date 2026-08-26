@@ -1,0 +1,4 @@
+*.dmslog8
+*.dmslog*
+__pycache__/
+.DS_Store

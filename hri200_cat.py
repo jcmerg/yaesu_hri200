@@ -83,10 +83,15 @@ import time
 try:
     import serial
 except ImportError:
-    sys.exit("pyserial missing:  py -3 -m pip install pyserial")
+    # Importable without pyserial so that other modules can reuse the
+    # frame builders and their dry-run paths.
+    serial = None
 
 SOH = b"\x01"
 EOT = b"\x04"
+
+MODE_FM = "4000"
+MODE_DIGITAL = "7000"
 
 PTT_ON = "P100000"
 PTT_OFF = "P010000"
@@ -138,12 +143,17 @@ def tone_code(hz):
 
 
 def block(freq_mhz, shift_mhz, narrow, sql, tone_hz, dcs, last,
-          reverse=False):
+          reverse=False, dgid=0, tail="0"):
     """Build one 32-character channel block.
 
     last: the power digit in the RX block, constant "2" in the TX
     block. Power was only ever observed to change in the RX block.
+    dgid: DG-ID, carried in the RX block only in the one capture that
+    shows it change; 99 appeared as "063", which is hex.
+    tail: position 31, "1" in the TX block while the node runs digital.
     """
+    if not 0 <= dgid <= 99:
+        raise ValueError("DG-ID out of range: %r" % dgid)
     f = "%9.5f" % freq_mhz
     if len(f) != 9:
         raise ValueError("frequency does not fit the field: %r" % f)
@@ -156,31 +166,41 @@ def block(freq_mhz, shift_mhz, narrow, sql, tone_hz, dcs, last,
             + SQL[sql]
             + tone_code(tone_hz)
             + dcs
-            + "000"
+            + "%03X" % dgid
             + last
-            + "0")
+            + tail)
 
 
 def d1m(freq_mhz, shift_mhz=0.0, power="mid", tone_hz=88.5,
         sql="none", narrow=False, reverse=False,
-        dcs_rx="023", dcs_tx="754", tx_freq_mhz=None, raw=None):
+        dcs_rx="023", dcs_tx="754", tx_freq_mhz=None, raw=None,
+        digital=False, dgid=0, tone_tx_hz=None):
     """Build a D1M command.
 
     sql:            "none", "tone" (CTCSS) or "dcs"
     dcs_rx/dcs_tx:  DCS code per block, retained even when sql != "dcs"
     reverse:        force a negative offset sign
     raw:            replace the entire body
+    digital:        C4FM instead of FM; sets the mode field to 7000 and
+                    position 31 of the TX block to 1, which moved
+                    together in the one capture that shows the switch
+    dgid:           DG-ID 0..99, RX block only
+    tone_tx_hz:     CTCSS of the TX block; the captures show it differing
+                    from the RX block, so it defaults to tone_hz but can
+                    be set apart
     """
     if raw is not None:
         body = raw
     else:
         if tx_freq_mhz is None:
             tx_freq_mhz = freq_mhz
-        body = ("4000"
+        body = ((MODE_DIGITAL if digital else MODE_FM)
                 + block(freq_mhz, shift_mhz, narrow, sql, tone_hz,
-                        dcs_rx, POWER[power], reverse)
-                + block(tx_freq_mhz, shift_mhz, narrow, sql, tone_hz,
-                        dcs_tx, "2", reverse)
+                        dcs_rx, POWER[power], reverse, dgid=dgid)
+                + block(tx_freq_mhz, shift_mhz, narrow, sql,
+                        tone_hz if tone_tx_hz is None else tone_tx_hz,
+                        dcs_tx, "2", reverse,
+                        tail="1" if digital else "0")
                 + "F")
     cmd = "D1M%04X%s" % (len(body), body)
     assert int(cmd[3:7], 16) == len(cmd) - 7
@@ -550,6 +570,9 @@ def main():
                          "as CTS), dtr (as DSR), both, or off")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+
+    if serial is None:
+        sys.exit("pyserial missing:  py -3 -m pip install pyserial")
 
     hri = HRI200(args.hri, args.freq, args.shift, verbose=args.verbose,
                  power=args.power, tone_hz=args.tone, sql=args.sql,
