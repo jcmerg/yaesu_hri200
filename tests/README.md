@@ -1,7 +1,7 @@
 # Tests
 
-`test_ysf_frame.py` compares `ysf_frame.py` against the encoders in
-MMDVMHost, by way of urfd. `ysf_reference_vectors.txt` holds 400 vectors
+`test_ysf_frame.py` compares the frame encoders in `hri200_ysf.py`
+against the encoders in MMDVMHost, by way of urfd. `ysf_reference_vectors.txt` holds 400 vectors
 produced by `reference_gen.cpp`, which calls `CYSFFICH::encode`,
 `CYSFPayload::writeVDMode2Data` and `CYSFPayload::writeHeader` directly.
 Every byte has to match.

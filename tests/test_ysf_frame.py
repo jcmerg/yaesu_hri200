@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Check ysf_frame.py against MMDVMHost's encoders.
+"""Check hri200_ysf.py against MMDVMHost's encoders.
 
 The vectors in ysf_reference_vectors.txt were produced by compiling
 urfd's CYSFFICH::encode and CYSFPayload::writeVDMode2Data and dumping
 their output for random inputs, so this is a comparison against the
 implementation the reflectors actually run, not against a reading of it.
 
-    python3 tests/test_ysf_frame.py
+    python3 tests/test_hri200_ysf.py
 """
 
 import os
@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import ysf_frame
+import hri200_ysf
 
 VECTORS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "ysf_reference_vectors.txt")
@@ -22,7 +22,7 @@ VECTORS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 def check_fich(fields, expected):
     fi, cs, cm, bn, bt, fn, ft, dt, mr, sq, dev, sql, voip = fields
-    fich = ysf_frame.Fich(fi=fi, cs=cs, cm=cm, bn=bn, bt=bt, fn=fn, ft=ft,
+    fich = hri200_ysf.Fich(fi=fi, cs=cs, cm=cm, bn=bn, bt=bt, fn=fn, ft=ft,
                           dt=dt, mr=mr, sq=sq, dev=bool(dev), sql=bool(sql),
                           voip=bool(voip))
     return fich.encode() == expected
@@ -30,23 +30,23 @@ def check_fich(fields, expected):
 
 def check_dch(text, expected):
     """The reference writes the DCH into an otherwise empty 120-byte frame."""
-    data = ysf_frame.encode_dch(text)
-    frame = bytearray(ysf_frame.FRAME_LENGTH)
-    base = ysf_frame.SYNC_LENGTH + ysf_frame.FICH_LENGTH
-    for i in range(ysf_frame.VCH_COUNT):
-        at = base + ysf_frame.BLOCK_STRIDE * i
-        frame[at:at + ysf_frame.DCH_LENGTH] = \
-            data[ysf_frame.DCH_LENGTH * i:ysf_frame.DCH_LENGTH * (i + 1)]
+    data = hri200_ysf.encode_dch(text)
+    frame = bytearray(hri200_ysf.FRAME_LENGTH)
+    base = hri200_ysf.SYNC_LENGTH + hri200_ysf.FICH_LENGTH
+    for i in range(hri200_ysf.VCH_COUNT):
+        at = base + hri200_ysf.BLOCK_STRIDE * i
+        frame[at:at + hri200_ysf.DCH_LENGTH] = \
+            data[hri200_ysf.DCH_LENGTH * i:hri200_ysf.DCH_LENGTH * (i + 1)]
     return bytes(frame) == expected
 
 
 def check_header(csd1, csd2, expected):
-    first = ysf_frame.encode_fr_data(csd1)
-    second = ysf_frame.encode_fr_data(csd2)
-    frame = bytearray(ysf_frame.FRAME_LENGTH)
-    base = ysf_frame.SYNC_LENGTH + ysf_frame.FICH_LENGTH
-    for i in range(ysf_frame.VCH_COUNT):
-        at = base + ysf_frame.BLOCK_STRIDE * i
+    first = hri200_ysf.encode_fr_data(csd1)
+    second = hri200_ysf.encode_fr_data(csd2)
+    frame = bytearray(hri200_ysf.FRAME_LENGTH)
+    base = hri200_ysf.SYNC_LENGTH + hri200_ysf.FICH_LENGTH
+    for i in range(hri200_ysf.VCH_COUNT):
+        at = base + hri200_ysf.BLOCK_STRIDE * i
         frame[at:at + 9] = first[9 * i:9 * (i + 1)]
         frame[at + 9:at + 18] = second[9 * i:9 * (i + 1)]
     return bytes(frame) == expected

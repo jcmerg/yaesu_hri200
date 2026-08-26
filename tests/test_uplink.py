@@ -18,7 +18,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hri200_ysf
-import ysf_frame
 
 CAPTURE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "captures", "20260826-rx-direction.txt")
@@ -81,7 +80,7 @@ def main():
                    all(p[4:14] == b"DL4JC-ND  " and p[14:24] == b"DL4JC     "
                        for p in packets)))
     checks.append(("sync on every frame",
-                   all(p[35:40] == ysf_frame.SYNC for p in packets)))
+                   all(p[35:40] == hri200_ysf.SYNC for p in packets)))
     checks.append(("one packet per captured frame plus two",
                    len(packets) == len(voice) + 2))
 
@@ -91,8 +90,8 @@ def main():
                    [hri200_ysf.voice_from_ysfd(p) for p in body] == voice))
 
     # DG-ID 99 has to reach the FICH.
-    plain = ysf_frame.Fich(fn=0, sql=False, sq=0).encode()
-    tagged = ysf_frame.Fich(fn=0, sql=True, sq=99).encode()
+    plain = hri200_ysf.Fich(fn=0, sql=False, sq=0).encode()
+    tagged = hri200_ysf.Fich(fn=0, sql=True, sq=99).encode()
     checks.append(("DG-ID changes the FICH", plain != tagged))
 
     for name, ok in checks:
