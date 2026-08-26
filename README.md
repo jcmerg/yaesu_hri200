@@ -99,6 +99,7 @@ needs neither the hardware nor pyserial.
 | `--power` | `mid` | `high`, `mid` or `low` |
 | `--dgid` | `0` | DG-ID 0..99 |
 | `--prefill` | `5` | frames buffered before playout starts |
+| `--gps` | off | pass the radio's position on to the reflector |
 | `--dry-run` | off | print frames, open no port |
 
 Header and terminator frames carry no voice and have to be kept out of
@@ -111,6 +112,24 @@ whitening-pattern blocks, while all 5100 blocks from the capture were.
 
 The link is half duplex, so anything the radio reports while it is
 transmitting is ignored.
+
+### Position
+
+A radio with GPS switched on reports where it is, in the tail of a `D1G`
+frame. The gateway drops that unless `--gps` says otherwise, because
+putting an operator on the map is their decision and not a default.
+
+With the switch on it is a hand-off rather than a translation. The tail
+is already shaped like the 10-byte fields the data channel carries — the
+82-character frame holds one, padded with spaces, the 108-character one
+holds two — so the fields are queued and go out in slot 6 in the order
+they arrived. Nothing is decoded and nothing is reassembled, which
+matters because how the longitude is packed is still unknown.
+
+urfd fills that slot with a fixed byte string of its own. It has the
+shape of a position taken from somebody's capture, so this does not copy
+it: without `--gps` the slot carries the blank MMDVMHost uses for
+unassigned fields.
 
 ### Building a YSF frame
 

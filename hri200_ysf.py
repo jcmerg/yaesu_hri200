@@ -18,6 +18,9 @@ vocoder is involved in either direction.
         --host ysf.example.org --port 42000 --freq 144.85
 
     python3 hri200_ysf.py --dry-run --call DL4JC --host ... --port ...
+
+The radio reports its position when it has GPS switched on, and the
+gateway drops it unless `--gps` says otherwise.
 """
 
 import argparse
@@ -313,18 +316,42 @@ def build_header_frame(source, gateway, terminator=False, dgid=0):
     return bytes(frame)
 
 
-def dch_for_frame(fn, source, gateway):
+def dch_from_d1g(body):
+    """Pull the data-channel fields out of a D1G frame.
+
+    The tail behind the radio ID is already shaped like the 10-byte
+    fields the data channel carries: the short frame holds one, padded
+    out with spaces, and the long one holds two. They are passed on as
+    they arrive rather than taken apart, so nothing is invented.
+    """
+    tail = body[75:]
+    if not tail or len(tail) % 2:
+        return []
+    try:
+        raw = bytes.fromhex(tail)
+    except ValueError:
+        return []
+    fields = []
+    for at in range(0, len(raw), CALLSIGN_LENGTH):
+        field = raw[at:at + CALLSIGN_LENGTH]
+        if len(field) < CALLSIGN_LENGTH:
+            field += b" " * (CALLSIGN_LENGTH - len(field))
+        fields.append(field)
+    return fields
+
+
+def dch_for_frame(fn, source, gateway, gps=None):
     """Which of the data-channel fields a given frame number carries.
 
     The rotation follows what MMDVMHost and urfd emit, so a reflector sees
     the fields where it expects them.
 
-    Slot 6 is where a station with GPS puts its position. This sends the
-    blank that MMDVMHost uses for unassigned slots: the radio does report
-    its position, in the tail of a D1G frame, but forwarding it is not
-    something a gateway should decide on the operator's behalf. urfd fills
-    the slot with a fixed byte string instead, which looks like a position
-    lifted from somebody's capture, so it is not copied here.
+    Slot 6 is where a station with GPS puts its position. Without `gps` it
+    carries the blank MMDVMHost uses for unassigned slots, which is the
+    default: the radio does report its position, but forwarding it is the
+    operator's decision. urfd fills the slot with a fixed byte string
+    instead, which has the shape of a position lifted from somebody's
+    capture, so it is not copied here.
     """
     if fn == 0:
         return "**********"
@@ -332,6 +359,8 @@ def dch_for_frame(fn, source, gateway):
         return source
     if fn in (2, 5):
         return gateway
+    if fn == 6 and gps is not None:
+        return gps
     return " " * 10
 
 
@@ -427,6 +456,7 @@ class YSFClient(object):
         self.callsign = self.gateway.encode("ascii")
         self.dgid = dgid
         self.verbose = verbose
+        self.gps = deque(maxlen=8)     # position fields waiting for slot 6
         self.source = None
         self.fn = 0
         self.counter = 0
@@ -503,9 +533,13 @@ class YSFClient(object):
         self._emit(build_header_frame(self.source, self.gateway,
                                                 dgid=self.dgid), 0)
         self.counter = 1
+        self.gps.clear()
 
     def send_voice(self, payload):
-        dch = dch_for_frame(self.fn, self.source, self.gateway)
+        gps = None
+        if self.fn == 6 and self.gps:
+            gps = self.gps.popleft()
+        dch = dch_for_frame(self.fn, self.source, self.gateway, gps=gps)
         frame = build_frame(payload, fi=FI_COMMUNICATIONS,
                                       fn=self.fn, ft=6, dch=dch,
                                       dgid=self.dgid)
@@ -544,6 +578,7 @@ class HRI200Digital(HRI200):
         self.total = 0
         self.underruns = 0
         self.uplink = None          # set by main() to the reflector client
+        self.forward_gps = False    # --gps
         self.heard = None           # callsign from D1H or D1G
         self.receiving = False
         self.last_rx = 0.0
@@ -623,6 +658,8 @@ class HRI200Digital(HRI200):
             self._on_callsign(body[27:37])
         elif body.startswith("D1G") and len(body) >= 35:
             self._on_callsign(body[25:35])
+            if self.forward_gps and self.uplink is not None:
+                self.uplink.gps.extend(dch_from_d1g(body))
 
     def _on_callsign(self, field):
         name = field.strip()
@@ -753,6 +790,8 @@ def main():
     ap.add_argument("--dgid", type=int, default=0, help="DG-ID 0..99")
     ap.add_argument("--prefill", type=int, default=5,
                     help="frames buffered before playout starts")
+    ap.add_argument("--gps", action="store_true",
+                    help="pass the radio's position on to the reflector")
     ap.add_argument("--dry-run", action="store_true",
                     help="do not open the serial port, print frames instead")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -781,6 +820,9 @@ def main():
                         prefill=args.prefill)
 
     hri.uplink = client
+    hri.forward_gps = args.gps
+    if args.gps:
+        print("GPS: the position your radio reports goes out to the network")
 
     client.start()
     try:

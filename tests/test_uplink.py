@@ -57,6 +57,28 @@ def build(dgid=0):
     return packets
 
 
+def gps_check():
+    """Slot 6 stays blank unless a position is handed in.
+
+    The captures have their position field zeroed, so this uses a made-up
+    D1G frame with recognisable bytes.
+    """
+    idx = "21002000"
+    fields = "*****FDQTv" + "DL4JC     " + " " * 30
+    tail = "".join("%02X" % (0x41 + i) for i in range(20))      # 'A'..'T'
+    body = "D1G006C" + idx + fields + "     FDQTv" + tail
+    assert len(body) - 7 == 0x6C
+
+    got = hri200_ysf.dch_from_d1g(body)
+    parsed = got == [b"ABCDEFGHIJ", b"KLMNOPQRST"]
+
+    blank = hri200_ysf.dch_for_frame(6, SOURCE, GATEWAY)
+    passed = hri200_ysf.dch_for_frame(6, SOURCE, GATEWAY, gps=got[0])
+    return [("D1G splits into 10-byte fields", parsed),
+            ("slot 6 blank without --gps", blank == " " * 10),
+            ("slot 6 carries the position with it", passed == b"ABCDEFGHIJ")]
+
+
 def main():
     if "--hex" in sys.argv:
         for packet in build():
@@ -93,6 +115,8 @@ def main():
     plain = hri200_ysf.Fich(fn=0, sql=False, sq=0).encode()
     tagged = hri200_ysf.Fich(fn=0, sql=True, sq=99).encode()
     checks.append(("DG-ID changes the FICH", plain != tagged))
+
+    checks.extend(gps_check())
 
     for name, ok in checks:
         print("  %-40s %s" % (name, "ok" if ok else "FAILED"))
