@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
-"""Feed a YSF reflector into an HRI-200, one direction.
+"""Bridge a YSF reflector and an HRI-200, both ways.
 
     YSF reflector =[UDP]= hri200_ysf.py =[COM7]= HRI-200 -> radio
 
 The HRI-200 does not hand the C4FM air interface to the PC. What travels
-over the serial link in a D1E frame is 65 bytes, and those 65 bytes are
-the five VCH sections of a YSF V/D mode 2 frame in on-air form, 13 bytes
+over the serial link is 65 bytes per 100 ms, and those 65 bytes are the
+five VCH sections of a YSF V/D mode 2 frame in on-air form, 13 bytes
 each. Sync, FICH and the DCH data channel have already been removed by
-the radio. Going from a 155-byte YSFD packet to a D1E frame is therefore
-a byte copy, with no vocoder and no FEC arithmetic involved:
+the radio. The frame is `D1E` outbound and `D1R` inbound, identical apart
+from the letter.
 
-    frame   = packet[35:155]
-    payload = frame[35 + 18*i : 48 + 18*i]   for i in 0..4
-
-See README.md for how that was established.
-
-**This carries the reflector to the radio and nothing in return.** No
-capture of the read direction exists yet, so what the HRI-200 sends to
-the PC when someone talks on the node frequency is unknown. Until that
-is captured, you can listen to a reflector but not talk into it.
+Downlink is therefore a byte copy: take the voice out of a YSFD packet
+and hand it over. Uplink has to put back what the radio stripped, which
+`ysf_frame` does. No vocoder is involved in either direction.
 
     python3 hri200_ysf.py --hri COM7 --call DL4JC \
         --host ysf.example.org --port 42000 --freq 144.85
@@ -35,7 +29,10 @@ import time
 from collections import deque
 
 import hri200_cat
+import ysf_frame
 from hri200_cat import HRI200, EOT, SOH
+from ysf_frame import (PAYLOAD_LENGTH, VCH_COUNT, VCH_LENGTH, is_voice,
+                       is_voice_payload)
 
 # ----------------------------------------------------------------------
 # YSF frame geometry
@@ -45,42 +42,13 @@ from hri200_cat import HRI200, EOT, SOH
 # 13 bytes VCH.
 
 YSFD_LENGTH = 155
-FRAME_OFFSET = 35
-VCH_OFFSET = 35          # within the frame
-BLOCK_STRIDE = 18
-VCH_LENGTH = 13
-VCH_COUNT = 5
-PAYLOAD_LENGTH = VCH_LENGTH * VCH_COUNT      # 65
+FRAME_OFFSET = 35        # where the 120-byte air frame starts in a packet
+DEST = b"ALL" + b" " * 7
 
-# Bit 4*k+base of the VCH, the V/D mode 2 interleave.
-INTERLEAVE = [4 * k + base for base in range(4) for k in range(26)]
-
-WHITENING = bytes([0x93, 0xD7, 0x51, 0x21, 0x9C, 0x2F, 0x6C, 0xD0, 0xEF,
-                   0x0F, 0xF8, 0x3D, 0xF1])
-
-FRAME_INTERVAL = 0.100   # one D1E frame per 100 ms
-COUNTER_STEP = 5         # the D1E counter runs per 20 ms subframe
+FRAME_INTERVAL = 0.100   # one voice frame per 100 ms
+COUNTER_STEP = 5         # the D1E and D1R counter runs per 20 ms subframe
 POLL_INTERVAL = 5.0      # YSFP keepalive
-
-
-def _bits(data):
-    return [(data[i >> 3] >> (7 - (i & 7))) & 1 for i in range(8 * len(data))]
-
-
-def is_voice(block):
-    """True if a 13-byte block is a well-formed V/D mode 2 VCH.
-
-    After de-interleaving and removing the whitening, bits 0..80 fall
-    into 27 triplets that carry each data bit three times. Voice passes
-    this at 100 %, unrelated data at the 25 % a coin toss gives, so it
-    doubles as the filter that keeps header and terminator frames — which
-    hold no voice at all — out of the stream.
-    """
-    raw = _bits(block)
-    vch = [raw[INTERLEAVE[i]] for i in range(104)]
-    wh = _bits(WHITENING)
-    vch = [b ^ w for b, w in zip(vch, wh)]
-    return all(vch[3 * i] == vch[3 * i + 1] == vch[3 * i + 2] for i in range(27))
+UPLINK_GAP = 0.4         # silence after which a received stream is over
 
 
 def voice_from_ysfd(packet):
@@ -88,12 +56,24 @@ def voice_from_ysfd(packet):
     if len(packet) != YSFD_LENGTH or not packet.startswith(b"YSFD"):
         return None
     frame = packet[FRAME_OFFSET:]
-    blocks = [frame[VCH_OFFSET + BLOCK_STRIDE * i:
-                    VCH_OFFSET + BLOCK_STRIDE * i + VCH_LENGTH]
+    blocks = [frame[ysf_frame.VCH_OFFSET + ysf_frame.BLOCK_STRIDE * i:
+                    ysf_frame.VCH_OFFSET + ysf_frame.BLOCK_STRIDE * i
+                    + VCH_LENGTH]
               for i in range(VCH_COUNT)]
     if not all(is_voice(b) for b in blocks):
         return None
     return b"".join(blocks)
+
+
+def parse_voice_frame(body):
+    """Pull the 65 bytes out of a D1E or D1R frame, or return None."""
+    if len(body) != 144 or body[:7] not in ("D1E0089", "D1R0089"):
+        return None
+    try:
+        payload = bytes.fromhex(body[14:])
+    except ValueError:
+        return None
+    return payload if is_voice_payload(payload) else None
 
 
 def d1e(counter, payload):
@@ -114,12 +94,18 @@ def d1e(counter, payload):
 # reflector link
 
 class YSFClient(object):
-    """Client side of the YSFReflector protocol, receive only."""
+    """Client side of the YSFReflector protocol."""
 
-    def __init__(self, host, port, callsign, verbose=False):
+    def __init__(self, host, port, callsign, verbose=False, dgid=0):
         self.addr = (host, port)
-        self.callsign = ("%-10s" % callsign.upper())[:10].encode("ascii")
+        self.gateway = ("%-10s" % callsign.upper())[:10]
+        self.callsign = self.gateway.encode("ascii")
+        self.dgid = dgid
         self.verbose = verbose
+        self.source = None
+        self.fn = 0
+        self.counter = 0
+        self.sent = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(0.2)
         self.queue = deque(maxlen=100)
@@ -172,6 +158,43 @@ class YSFClient(object):
                 continue
             self.queue.append(payload)
 
+    # -- uplink ---------------------------------------------------------
+    def _emit(self, frame, counter):
+        packet = (b"YSFD" + self.callsign
+                  + ("%-10s" % self.source)[:10].encode("ascii", "replace")
+                  + DEST + bytes([counter & 0x7F]) + frame)
+        try:
+            self.sock.sendto(packet, self.addr)
+        except OSError as exc:
+            print("uplink failed: %s" % exc)
+            return
+        self.sent += 1
+
+    def start_stream(self, source):
+        """Open a transmission with a header frame."""
+        self.source = source or "?"
+        self.fn = 0
+        self.counter = 0
+        self._emit(ysf_frame.build_header_frame(self.source, self.gateway,
+                                                dgid=self.dgid), 0)
+        self.counter = 1
+
+    def send_voice(self, payload):
+        dch = ysf_frame.dch_for_frame(self.fn, self.source, self.gateway)
+        frame = ysf_frame.build_frame(payload, fi=ysf_frame.FI_COMMUNICATIONS,
+                                      fn=self.fn, ft=6, dch=dch,
+                                      dgid=self.dgid)
+        self._emit(frame, self.counter)
+        self.counter += 1
+        self.fn = (self.fn + 1) % 7
+
+    def end_stream(self):
+        """Close it with a terminator, which is what a reflector waits for."""
+        self._emit(ysf_frame.build_header_frame(self.source, self.gateway,
+                                                terminator=True,
+                                                dgid=self.dgid), 0)
+        self.source = None
+
 
 # ----------------------------------------------------------------------
 # HRI-200 in digital mode
@@ -195,6 +218,11 @@ class HRI200Digital(HRI200):
         self.sent = 0
         self.total = 0
         self.underruns = 0
+        self.uplink = None          # set by main() to the reflector client
+        self.heard = None           # callsign from D1H or D1G
+        self.receiving = False
+        self.last_rx = 0.0
+        self.rx_frames = 0
 
     def _d1m(self):
         return hri200_cat.d1m(self.freq_mhz, self.shift_mhz, power=self.power,
@@ -243,13 +271,13 @@ class HRI200Digital(HRI200):
                 if beat >= 10:
                     beat = 0
                     self._send("P100000" if self.tx else "P010000")
-                self._drain()
+                self._read()
+            self._expire_rx()
 
-    def _drain(self):
-        """Discard anything the box sends back.
+    def _read(self):
+        """Take in whatever the box sent and split it into frames.
 
-        Replies are not interpreted here: no capture of the read
-        direction exists, so their format in digital mode is unknown.
+        Called with the port lock held.
         """
         try:
             waiting = self.ser.in_waiting
@@ -257,7 +285,51 @@ class HRI200Digital(HRI200):
             return
         if waiting:
             self.buf += self.ser.read(waiting)
-            self.buf = self.buf[-4096:]
+        while EOT in self.buf:
+            chunk, self.buf = self.buf.split(EOT, 1)
+            chunk = chunk.lstrip(SOH)
+            if chunk:
+                self._handle(chunk.decode("ascii", "replace"))
+
+    def _handle(self, body):
+        if body.startswith("D1R"):
+            self._on_voice(body)
+        elif body.startswith("D1H") and len(body) >= 37:
+            self._on_callsign(body[27:37])
+        elif body.startswith("D1G") and len(body) >= 35:
+            self._on_callsign(body[25:35])
+
+    def _on_callsign(self, field):
+        name = field.strip()
+        if name and name.strip("*"):
+            self.heard = name
+
+    def _on_voice(self, body):
+        """Pass a received frame up to the reflector.
+
+        Ignored while the radio is transmitting: the link is half duplex
+        and anything arriving then is not a station on the node frequency.
+        """
+        if self.streaming or self.uplink is None:
+            return
+        payload = parse_voice_frame(body)
+        if payload is None:
+            return
+        self.last_rx = time.time()
+        if not self.receiving:
+            self.receiving = True
+            self.rx_frames = 0
+            self.uplink.start_stream(self.heard or "?")
+            print("heard %s" % (self.heard or "unknown"))
+        self.uplink.send_voice(payload)
+        self.rx_frames += 1
+
+    def _expire_rx(self):
+        """End an uplink stream once the frames stop coming."""
+        if self.receiving and time.time() - self.last_rx > UPLINK_GAP:
+            self.receiving = False
+            self.uplink.end_stream()
+            print("heard end (%d frames)" % self.rx_frames)
 
     def _start_stream(self):
         self.streaming = True
@@ -369,7 +441,8 @@ def main():
             Serial=lambda: _NullSerial(verbose=args.verbose))
         hri200_cat.WARMUP = 0.0
 
-    client = YSFClient(args.host, args.port, args.call, verbose=args.verbose)
+    client = YSFClient(args.host, args.port, args.call, verbose=args.verbose,
+                       dgid=args.dgid)
 
     def pull():
         try:
@@ -382,6 +455,8 @@ def main():
                         power=args.power, dgid=args.dgid, source=pull,
                         prefill=args.prefill)
 
+    hri.uplink = client
+
     client.start()
     try:
         hri.open()
@@ -393,8 +468,9 @@ def main():
     try:
         while True:
             time.sleep(5.0)
-            print("  %d YSFD in, %d skipped, %d D1E out"
-                  % (client.packets, client.skipped, hri.total))
+            print("  down: %d YSFD in, %d skipped, %d D1E out"
+                  "   up: %d YSFD out"
+                  % (client.packets, client.skipped, hri.total, client.sent))
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
