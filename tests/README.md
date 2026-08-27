@@ -12,6 +12,11 @@ The stronger check is `reference_check.cpp`: it runs urfd's own
 `CYSFFICH::decode`, `processHeaderData` and `readVDMode2Data` over the
 packets, which is what a reflector does with them.
 
+`test_node_id.py` needs neither urfd nor hardware: it rebuilds the node
+identification frame from the capture byte for byte and checks the
+checksum against all three captured frames, including the two taken
+while the node was still connected to a WIRES-X room.
+
 Both C++ programs need a checkout of urfd:
 
 ```

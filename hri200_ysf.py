@@ -481,6 +481,69 @@ def d1f(dest, source, downlink, uplink, rem1="", rem2="", flags=D1F_FLAGS):
     return "D1F%04X%s" % (len(body), body)
 
 
+NODE_ID_INTERVAL = 600.0   # how often the node identifies itself when idle
+NODE_ID_KEY = 2.0          # how long P110000 holds the radio for the burst
+NODE_PREFIX = "20011000"   # the short D1F carries 21016000
+NODE_MARKER = "]A_5"       # opens the identification string
+NODE_IDLE = "02"           # 05 while the node was connected to a room
+NODE_CHECK = 0x29          # the constant the checksum needs; unexplained
+
+
+def node_info(number, name, city):
+    """Build the identification string a WIRES-X node puts on the air.
+
+    89 characters and a terminating ETX, laid out as the capture has it:
+
+        ]A_5 <number,5> <name,10> <city,14> <status,2>
+             <room number,5> <room name,16> <count,3>
+             <10 blank> <room city,14> <5> ETX
+
+    The room fields are what a node connected to one fills in; the last
+    frame of the capture, taken after the operator had disconnected,
+    carries the form built here — status `02`, the count zeroed and the
+    rest blank. This gateway is never in a WIRES-X room, so that is the
+    only form it can honestly send.
+    """
+    return (NODE_MARKER
+            + ("%-5s" % number)[:5]
+            + ("%-10s" % name)[:10]
+            + ("%-14s" % city)[:14]
+            + NODE_IDLE
+            + " " * 21
+            + "000"
+            + " " * 29
+            + "\x03").encode("ascii", "replace")
+
+
+def d1f_node(number, name, call, city, counter):
+    """Build the node identification frame.
+
+    The same six-field header the short D1F has — node name and callsign
+    where a transmission carries Src and Downlink, the node number left
+    and right aligned in the two fields behind them — then the
+    identification string as ASCII-hex with a checksum byte behind
+    its ETX.
+
+    The checksum is the sum of the header characters and of the string
+    including the ETX, plus 0x29. Where the constant comes from is not
+    known: it is what reproduces all three captured frames, across a
+    one-character change and a wholesale one, so it is a plain additive
+    sum with an offset rather than anything cleverer.
+    """
+    head = (NODE_PREFIX
+            + "*" * CALLSIGN_LENGTH
+            + ("%-10s" % name)[:CALLSIGN_LENGTH]
+            + ("%-10s" % call)[:CALLSIGN_LENGTH]
+            + " " * CALLSIGN_LENGTH
+            + ("%-10s" % number)[:CALLSIGN_LENGTH]
+            + ("%10s" % number)[-CALLSIGN_LENGTH:]
+            + "%02X" % (counter & 0xFF))
+    payload = node_info(number, name, city)
+    check = (sum(head.encode("ascii")) + sum(payload) + NODE_CHECK) & 0xFF
+    body = head + (payload + bytes([check])).hex().upper()
+    return "D1F%04X%s" % (len(body), body)
+
+
 # ----------------------------------------------------------------------
 # reflector link
 
@@ -624,6 +687,10 @@ class HRI200Digital(HRI200):
         self.heard = None           # callsign from D1H or D1G
         self.receiving = False
         self.radio_id = ""          # from the status reply, see _handle
+        self.node = None            # (number, name, city), see --node
+        self.node_counter = 0x81    # the capture ran 81, 82, 83
+        self.node_until = 0.0       # while the identification burst is out
+        self.next_node_id = 0.0
         self.last_rx = 0.0
         self.rx_frames = 0
 
@@ -667,6 +734,27 @@ class HRI200Digital(HRI200):
                    self.call, via,
                    rem2=" " * 5 + self.radio_id if self.radio_id else "")
 
+    def _node_id(self):
+        """Put the node identification on the air.
+
+        `D1B00010`, the identification frame, then `P110000`, which keys
+        the radio for a data burst rather than voice — the sequence the
+        original software runs ahead of a transmission. The burst is only
+        sent while nothing else is going on, and the radio is unkeyed
+        again a couple of seconds later.
+        """
+        number, name, city = self.node
+        with self.lock:
+            self._send("D1B00010")
+            self._send(d1f_node(number, name, self.call, city,
+                                self.node_counter))
+            self._send("P110000")
+        self.node_counter = (self.node_counter + 1) & 0xFF or 0x81
+        now = time.time()
+        self.node_until = now + NODE_ID_KEY
+        self.next_node_id = now + NODE_ID_INTERVAL
+        print("node ID %s" % number)
+
     def _poll(self):
         """Send one D1E every 100 ms and keep the box polled.
 
@@ -683,6 +771,7 @@ class HRI200Digital(HRI200):
         beat = 0
         poll_turn = False
         empty = 0
+        self.next_node_id = tick + 5.0      # let the handshake settle first
         while self.running:
             tick += FRAME_INTERVAL
             delay = tick - time.time()
@@ -690,6 +779,14 @@ class HRI200Digital(HRI200):
                 time.sleep(delay)
             elif delay < -FRAME_INTERVAL:
                 tick = time.time()          # fell behind, resynchronise
+
+            if self.node_until:
+                if time.time() >= self.node_until:
+                    self.node_until = 0.0
+                    self._send_locked("P010000")
+            elif (self.node and not self.streaming and not self.receiving
+                  and time.time() >= self.next_node_id):
+                self._node_id()
 
             payload = None
             if self.streaming:
@@ -701,7 +798,8 @@ class HRI200Digital(HRI200):
                         self._stop_stream()
                 else:
                     empty = 0
-            elif self.source and len(self.source.queue) >= self.prefill:
+            elif (self.source and not self.node_until
+                  and len(self.source.queue) >= self.prefill):
                 self._start_stream()
                 payload = self.source()
 
@@ -725,7 +823,9 @@ class HRI200Digital(HRI200):
                 if beat >= 5:
                     beat = 0
                     poll_turn = not poll_turn
-                    if poll_turn:
+                    if self.node_until:
+                        pass            # the burst has the radio keyed
+                    elif poll_turn:
                         self._send("P100000" if self.tx else "P010000")
                     else:
                         self._send("D1C0000")
@@ -883,9 +983,7 @@ class _NullSerial(object):
     def write(self, data):
         body = data.strip(SOH + EOT).decode("ascii", "replace")
         self.frames += 1
-        if self.verbose:
-            print("  -> %s" % body)
-        elif not body.startswith(("D1E", "P0", "P1", "D1C")):
+        if not self.verbose and not body.startswith(("D1E", "P0", "P1", "D1C")):
             print("  -> %s" % (body if len(body) < 60 else body[:57] + "..."))
         reply = self.REPLIES.get(body)
         if reply is None and body.startswith("D1M"):
@@ -911,6 +1009,11 @@ def main():
     ap.add_argument("--dgid", type=int, default=0, help="DG-ID 0..99")
     ap.add_argument("--prefill", type=int, default=5,
                     help="frames buffered before playout starts")
+    ap.add_argument("--node",
+                    help="WIRES-X node number; switches on the "
+                         "identification burst the radio may want")
+    ap.add_argument("--node-name", help="node name, default <call>-ND")
+    ap.add_argument("--node-city", default="", help="where the node is")
     ap.add_argument("--gps", action="store_true",
                     help="pass the radio's position on to the reflector")
     ap.add_argument("--dry-run", action="store_true",
@@ -942,6 +1045,12 @@ def main():
 
     hri.uplink = client
     hri.forward_gps = args.gps
+    if args.node:
+        hri.node = (args.node,
+                    args.node_name or (args.call.upper() + "-ND"),
+                    args.node_city)
+        print("node ID %s as %s, every %d s while idle"
+              % (args.node, hri.node[1], NODE_ID_INTERVAL))
     if args.gps:
         print("GPS: the position your radio reports goes out to the network")
 

@@ -99,6 +99,9 @@ needs neither the hardware nor pyserial.
 | `--power` | `mid` | `high`, `mid` or `low` |
 | `--dgid` | `0` | DG-ID 0..99 |
 | `--prefill` | `5` | frames buffered before playout starts |
+| `--node` | off | WIRES-X node number; switches on the identification burst |
+| `--node-name` | `<call>-ND` | node name in that burst |
+| `--node-city` | — | where the node is |
 | `--gps` | off | pass the radio's position on to the reflector |
 | `--dry-run` | off | print frames, open no port |
 
@@ -337,11 +340,38 @@ header, then the first `D1E`, and only then `P100000` — the PTT follows
 the voice rather than leading it — and repeats the header once after five
 frames.
 
-Ahead of all that comes the node's own identification: `D1B00010`, a
-250-character `D1F` holding node number, name, city and the room it is
-connected to, then `P110000`, which keys the radio for a data burst
-instead of voice. That is the WIRES-X node ID announcement, it needs a
-registered node number, and the gateway does not send it.
+### The node identification
+
+Ahead of a transmission the original software identifies the node:
+`D1B00010`, a 250-character `D1F`, then `P110000`, which keys the radio
+for a data burst rather than voice, and `P010000` about two seconds
+later. The long frame carries the same six-field header as the short one
+— node name and callsign where a transmission has Src and Downlink, the
+node number in the two fields behind them — and then an ASCII-hex
+payload:
+
+```
+]A_5 <number,5> <name,10> <city,14> <status,2>
+     <room number,5> <room name,16> <count,3> <10 blank>
+     <room city,14> <5> ETX <checksum>
+```
+
+The three captured frames say what the fields are, because the operator
+left the room between them: status went from `05` to `02`, the count
+from `123` to `000`, and everything naming the room went blank. That
+last frame is the only form this gateway can honestly send, and
+`tests/test_node_id.py` rebuilds it byte for byte.
+
+The checksum is the sum of the header characters and of the payload
+including its ETX, plus `0x29`. Where the constant comes from is not
+known — but a one-character change in one frame and a wholesale change
+in another both come out right, so it is an additive sum and not
+something with more structure to it.
+
+`--node` switches the burst on, because the number belongs to a
+registered node and inventing one would put somebody else's identity on
+the air. With it the gateway identifies five seconds after start-up and
+every ten minutes it spends idle, never across a transmission.
 
 ### The read direction
 
@@ -422,8 +452,14 @@ leading fields were empty on the device used here.
 - The box acknowledges `D1F` with `D1F00010`, the same short form it
   answers `D1E` with, so a header it will not use looks exactly like one
   it will. What the radio does with the fields is unverified: a
-  transmission carrying a correct `D1F` reached the other set with clean
-  audio and no callsign on the display.
+  transmission carrying a correct `D1F`, radio ID and all, reached the
+  other set with clean audio and no callsign on the display. Whether the
+  identification burst is what the radio waits for before it fills the
+  data channel is the open question `--node` exists to answer.
+- The radio on the bench is an FTM-510D on experimental firmware, and
+  the radio ID in the write-direction capture is not its own, so the
+  capture and the hardware are not the same set. Where the two disagree,
+  a firmware difference is as good an explanation as a misreading.
 - What the `slot` digits in `D1H` count, and how the tail of `D1G` is
   laid out, is only sketched. The gateway takes the callsign from the
   second field and ignores the rest.
