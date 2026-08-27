@@ -481,6 +481,8 @@ def d1f(dest, source, downlink, uplink, rem1="", rem2="", flags=D1F_FLAGS):
     return "D1F%04X%s" % (len(body), body)
 
 
+STATE_CLASS = {"0": "idle", "1": "receiving", "5": "transmitting"}
+
 NODE_ID_INTERVAL = 600.0   # how often the node identifies itself when idle
 NODE_ID_KEY = 2.0          # how long P110000 holds the radio for the burst
 NODE_PREFIX = "20011000"   # the short D1F carries 21016000
@@ -687,6 +689,7 @@ class HRI200Digital(HRI200):
         self.heard = None           # callsign from D1H or D1G
         self.receiving = False
         self.radio_id = ""          # from the status reply, see _handle
+        self.state = ""             # the YY field of the same reply
         self.node = None            # (number, name, city), see --node
         self.node_counter = 0x81    # the capture ran 81, 82, 83
         self.node_until = 0.0       # while the identification burst is out
@@ -877,6 +880,15 @@ class HRI200Digital(HRI200):
         if found and found != self.radio_id and not found.isspace():
             self.radio_id = found
             print("radio ID %s" % found)
+
+        state = body[10:12]
+        if state != self.state:
+            self.state = state
+            kind = STATE_CLASS.get(state[1:])
+            if kind is None:
+                print("state %s - not in any capture, please report" % state)
+            elif self.verbose:
+                print("state %s (%s)" % (state, kind))
 
     def _on_callsign(self, field):
         name = field.strip()

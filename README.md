@@ -200,7 +200,13 @@ read direction carries for other radios, `FDQTv` from a handheld and
 gateway reads them out of the status reply and puts them in the `D1F`
 header.
 
-In the status reply `YY` ending in `5` means transmitting. `00` is idle:
+In the status reply the second digit of `YY` says what the radio is
+doing — `0` idle, `1` receiving, `5` transmitting — and the first looks
+like a phase within that: reception went `11` then `31` within 200 ms,
+carrier and then digital sync, and a transmission runs `05`, `25`, `45`
+and back down through `25` to `00`. The gateway names the ones both
+captures show and prints any other value it meets, because a state
+nobody has seen is worth more than a silent one. `00` is idle:
 during actual reception it read `11` and then `31` within 200 ms, which
 looks like carrier first and digital sync after, though only one capture
 shows it. `XX` is a signal level and reaches at least `AA`; the 0..4 seen
