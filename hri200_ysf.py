@@ -626,6 +626,16 @@ class HRI200Digital(HRI200):
                               narrow=self.narrow, digital=True, dgid=self.dgid,
                               tone_tx_hz=self.tone_tx_hz)
 
+    def _send(self, cmd):
+        """Log what goes out, which the base class does not.
+
+        D1E is left out: ten frames a second of 144 characters each bury
+        everything else, and the payload is in the capture anyway.
+        """
+        if self.verbose and not cmd.startswith("D1E"):
+            print("  -> %s" % (cmd if len(cmd) < 70 else cmd[:67] + "..."))
+        HRI200._send(self, cmd)
+
     def _d1f(self):
         """The header frame that goes ahead of a transmission.
 
@@ -772,8 +782,11 @@ class HRI200Digital(HRI200):
         self.counter = 0
         self.d1f_counter = (self.d1f_counter + 1) & 0xFF
         self._send_locked(self._d1f())
-        print("stream start (%s)"
-              % (self.uplink.down_src if self.uplink else "?"))
+        src = via = ""
+        if self.uplink is not None:
+            src, via = self.uplink.down_src, self.uplink.down_via
+        print("stream start: %s via %s" % (src or "(no callsign)",
+                                           via or "(no gateway)"))
 
     def _stop_stream(self):
         self.streaming = False
