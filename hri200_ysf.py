@@ -400,6 +400,7 @@ FRAME_OFFSET = 35        # where the 120-byte air frame starts in a packet
 DEST = b"ALL" + b" " * 7
 
 D1F_PREFIX = "21016000"  # the read direction carries 21002000
+D1F_FLAGS = "09"         # what the write direction carried; not a counter
 D1F_REPEAT = 5           # the capture repeats the header after five frames
 FRAME_INTERVAL = 0.100   # one voice frame per 100 ms
 COUNTER_STEP = 5         # the D1E and D1R counter runs per 20 ms subframe
@@ -446,13 +447,13 @@ def d1e(counter, payload):
     return "D1E%04X%s" % (len(body), body)
 
 
-def d1f(dest, source, downlink, uplink, counter, rem1="", rem2=""):
+def d1f(dest, source, downlink, uplink, rem1="", rem2="", flags=D1F_FLAGS):
     """Build a D1F frame: the callsigns that go with a transmission.
 
     Field for field the write-direction twin of the D1G frames the box
     sends while receiving — an 8-character prefix, six 10-character
-    fields in the order the YSF data channel carries them, a counter
-    that steps once per transmission, and the position slot:
+    fields in the order the YSF data channel carries them, two
+    characters whose meaning is open, and the position slot:
 
         21016000 **********  DL4JC       ...  09 000000000000
 
@@ -462,6 +463,11 @@ def d1f(dest, source, downlink, uplink, counter, rem1="", rem2=""):
     radio's ID in Dest and Rem2, neither of which exists here, so those
     fields go out the way the read direction shows unassigned ones.
 
+    `flags` is not a counter, whatever it looks like: three transmissions
+    in a row carried `09` before it moved to `0A`, and the read direction
+    stayed between `0C` and `0F`. Since it cannot be derived it is sent
+    as observed rather than invented.
+
     The radio strips sync, FICH and DCH on receive and generates them on
     transmit, so this is where the callsigns for the outgoing frame come
     from. The original software sends it ahead of the first D1E of every
@@ -470,7 +476,7 @@ def d1f(dest, source, downlink, uplink, counter, rem1="", rem2=""):
     fields = [dest, source, downlink, uplink, rem1, rem2]
     body = D1F_PREFIX + "".join(("%-10s" % (f or ""))[:CALLSIGN_LENGTH]
                                 for f in fields)
-    body += "%02X" % (counter & 0xFF) + "0" * 12
+    body += flags + "0" * 12
     return "D1F%04X%s" % (len(body), body)
 
 
@@ -608,7 +614,6 @@ class HRI200Digital(HRI200):
         self.call = kwargs.pop("call", "")
         HRI200.__init__(self, *args, **kwargs)
         self.counter = 0
-        self.d1f_counter = 0
         self.streaming = False
         self.sent = 0
         self.total = 0
@@ -648,8 +653,7 @@ class HRI200Digital(HRI200):
         if self.uplink is not None:
             src = self.uplink.down_src
             via = self.uplink.down_via
-        return d1f("**********", src or "?", self.call, via,
-                   self.d1f_counter)
+        return d1f("**********", src or "?", self.call, via)
 
     def _poll(self):
         """Send one D1E every 100 ms and keep the box polled.
@@ -702,6 +706,7 @@ class HRI200Digital(HRI200):
                         # either, the radio answered TX PROHIBIT.
                         self.tx = True
                         self._send("P100000")
+                        beat = 0        # not twice in the same tick
                     elif self.sent == D1F_REPEAT:
                         self._send(self._d1f())
                 beat += 1
@@ -780,7 +785,6 @@ class HRI200Digital(HRI200):
         """Announce the transmission, but leave the PTT to the first frame."""
         self.streaming = True
         self.counter = 0
-        self.d1f_counter = (self.d1f_counter + 1) & 0xFF
         self._send_locked(self._d1f())
         src = via = ""
         if self.uplink is not None:

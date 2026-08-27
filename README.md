@@ -304,7 +304,7 @@ YSF data channel carries them:
 | `38:48` | Uplink | `W9CEQ` | blank |
 | `48:58` | Rem1 | `9720193753` | blank |
 | `58:68` | Rem2 | `28054G0f4e` | `     FDQTv` |
-| `68:70` | counter | `09`, `0A`, `0C` … | likewise |
+| `68:70` | flags | `09`, `0A` | `0C`, `0D`, `0F` |
 | `70:82` | position | zeroed | zeroed |
 
 The capture was taken with the node connected to a WIRES-X room, so its
@@ -315,6 +315,12 @@ reflector names in Src, itself in Downlink and the reflector's gateway in
 Uplink, and leaves the rest blank, which is what the read direction shows
 for unassigned fields. What the two differing prefix digits mean is
 unverified.
+
+The two characters at `68:70` looked like a counter and are not one:
+three transmissions in a row carried `09` before it moved to `0A`, and
+the read direction never left `0C` to `0F`. Nothing in either capture
+says what moves it, so the gateway sends the `09` the write direction
+showed rather than a number of its own.
 
 Order matters at the start of a transmission. The original sends the
 header, then the first `D1E`, and only then `P100000` — the PTT follows
@@ -403,6 +409,11 @@ leading fields were empty on the device used here.
 - Whether `P110000` is specifically "key for data" or something wider is
   a reading of three occurrences, each following the node-information
   frame.
+- The box acknowledges `D1F` with `D1F00010`, the same short form it
+  answers `D1E` with, so a header it will not use looks exactly like one
+  it will. What the radio does with the fields is unverified: a
+  transmission carrying a correct `D1F` reached the other set with clean
+  audio and no callsign on the display.
 - What the `slot` digits in `D1H` count, and how the tail of `D1G` is
   laid out, is only sketched. The gateway takes the callsign from the
   second field and ignores the rest.
