@@ -178,7 +178,7 @@ M00        → M00
 R6423      → R<hex>      device identity, ASCII-hex CSV
 P010000    → B0 0    0000000
 D1V0000    → D1V0030<radio type and firmware>
-D1M<...>   → echo        channel configuration
+D1M<...>   → the mode the radio is in, not necessarily the one asked for
 D1B00010   → D1B00010
 ```
 
@@ -237,6 +237,14 @@ The mode field read `4000` while the node ran in FM and `7000` after the
 operator switched it to digital. Position `31` of the TX block moved from
 `0` to `1` in the same step, so the two cannot be told apart from a single
 transition.
+
+The reply is not an echo. An FTM-510D asked for `7000` answered `5000`,
+and answered it every time. Read as a mask over `4000` — FM `0b100`,
+digital `0b111` — the radio took one of the two bits that moved when the
+capture switched to digital and dropped the other. What that bit does is
+the open question: the same radio transmits C4FM that decodes cleanly at
+the other end, but sends an empty data channel with it and refuses the
+node identification burst. `tools/modeprobe.py` walks the field.
 
 Block layout (32 characters):
 
@@ -379,6 +387,14 @@ registered node and inventing one would put somebody else's identity on
 the air. With it the gateway identifies five seconds after start-up and
 every ten minutes it spends idle, never across a transmission.
 
+On the FTM-510D it does not work. The box takes the frame and
+acknowledges it, `P110000` gets the ordinary `B0` reply — and the state
+field never leaves `00`. No `05`, no `25`, no `45`: the radio never
+begins the transmission, and its display reads TX PROHIBIT for a moment.
+Whether `P110000` means something narrower than "key for data", or the
+radio will not identify as a node it does not consider itself to be, is
+unresolved.
+
 ### The read direction
 
 What the box sends while the radio receives mirrors the write direction
@@ -455,6 +471,10 @@ leading fields were empty on the device used here.
 - Whether `P110000` is specifically "key for data" or something wider is
   a reading of three occurrences, each following the node-information
   frame.
+- Why the radio sends an empty data channel is still open. Everything
+  the capture does ahead of a transmission is now reproduced — header,
+  radio ID, field order, identification frame — and the callsign still
+  does not appear at the far end.
 - The box acknowledges `D1F` with `D1F00010`, the same short form it
   answers `D1E` with, so a header it will not use looks exactly like one
   it will. What the radio does with the fields is unverified: a
@@ -493,6 +513,21 @@ python3 tools/dmslog.py capture.dmslog8 --only D1M
 
 Records appear twice, as IRP request and completion, and identical
 adjacent frames are collapsed.
+
+### Probing the mode field
+
+`tools/modeprobe.py` sends a `D1M` for every value of the mode field's
+first digit and prints what comes back beside it, then tries the TX
+block's digital flag both ways. Nothing is transmitted and the gateway's
+own settings are restored at the end.
+
+```
+python3 tools/modeprobe.py --hri COM7 --freq 144.85
+```
+
+A value that returns unchanged is one the radio accepted. Where the
+answer differs, the bits it dropped are the ones it will not do, and
+that is the reading the mask above needs to be confirmed or discarded.
 
 ### Probing the read direction
 
