@@ -400,6 +400,7 @@ FRAME_OFFSET = 35        # where the 120-byte air frame starts in a packet
 DEST = b"ALL" + b" " * 7
 
 D1F_PREFIX = "21016000"  # the read direction carries 21002000
+D1F_GROUP = "*****"      # broadcast, where WIRES-X puts a room number
 D1F_FLAGS = "09"         # what the write direction carried; not a counter
 D1F_REPEAT = 5           # the capture repeats the header after five frames
 FRAME_INTERVAL = 0.100   # one voice frame per 100 ms
@@ -622,6 +623,7 @@ class HRI200Digital(HRI200):
         self.forward_gps = False    # --gps
         self.heard = None           # callsign from D1H or D1G
         self.receiving = False
+        self.radio_id = ""          # from the status reply, see _handle
         self.last_rx = 0.0
         self.rx_frames = 0
 
@@ -644,16 +646,26 @@ class HRI200Digital(HRI200):
     def _d1f(self):
         """The header frame that goes ahead of a transmission.
 
-        Dest is the broadcast field the uplink also uses, Src the station
-        the reflector is sending, Downlink this gateway and Uplink the
-        gateway the traffic came in through. Rem1 and Rem2 hold WIRES-X
-        node data in the capture and stay blank here.
+        Dest is the broadcast group followed by this radio's own ID, the
+        shape a set transmitting a CQ puts on the air: the read direction
+        showed `*****FDQTv` from a handheld and the WIRES-X capture
+        `28054G0f4e`, room number in place of the group. Rem2 repeats the
+        ID behind five spaces, again as the read direction has it.
+
+        Src is the station the reflector is sending, Downlink this
+        gateway, Uplink the gateway the traffic came in through. Rem1
+        holds a WIRES-X node number in the capture and stays blank.
+
+        Until the first status reply arrives the ID is unknown and the
+        field falls back to stars, which is what went out before.
         """
         src = via = ""
         if self.uplink is not None:
             src = self.uplink.down_src
             via = self.uplink.down_via
-        return d1f("**********", src or "?", self.call, via)
+        return d1f(D1F_GROUP + (self.radio_id or D1F_GROUP), src or "?",
+                   self.call, via,
+                   rem2=" " * 5 + self.radio_id if self.radio_id else "")
 
     def _poll(self):
         """Send one D1E every 100 ms and keep the box polled.
@@ -740,6 +752,8 @@ class HRI200Digital(HRI200):
     def _handle(self, body):
         if self.verbose:
             print("  <- %s" % (body if len(body) < 70 else body[:67] + "..."))
+        if body.startswith(("D1C", "D1P")) and len(body) >= 17:
+            self._on_status(body)
         if body.startswith("D1R"):
             self._on_voice(body)
         elif body.startswith("D1H") and len(body) >= 37:
@@ -748,6 +762,21 @@ class HRI200Digital(HRI200):
             self._on_callsign(body[25:35])
             if self.forward_gps and self.uplink is not None:
                 self.uplink.gps.extend(dch_from_d1g(body))
+
+    def _on_status(self, body):
+        """Pick the radio ID out of a status reply.
+
+        `D1C000B0` `XX` `YY` `FD2wr` `0` — the five characters behind the
+        signal and state fields have the shape of the radio IDs the read
+        direction carries for other sets, `FDQTv` and `G0f4e`, and the
+        same five turn up in the D1V identity reply. They looked like
+        part of a constant tail for as long as only one box was on the
+        bench.
+        """
+        found = body[12:17]
+        if found and found != self.radio_id and not found.isspace():
+            self.radio_id = found
+            print("radio ID %s" % found)
 
     def _on_callsign(self, field):
         name = field.strip()
@@ -819,7 +848,7 @@ class _NullSerial(object):
         "R6423": "R6" + "00000,00000,XXXXXXXX,20231120153554".encode().hex().upper(),
         "D1V0000": "D1V0030DRY-RUN",
         "D1B00010": "D1B00010",
-        "D1C0000": "D1C000B00000FD2wr0",
+        "D1C0000": "D1C000B00000DRYRN0",   # the radio ID is per set
     }
 
     def __init__(self, verbose=False):

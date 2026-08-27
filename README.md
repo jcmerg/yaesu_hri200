@@ -185,9 +185,17 @@ D1B00010   → D1B00010
 | --- | --- |
 | `P100000` | PTT on — repeat at 1 Hz while the state holds |
 | `P010000` | PTT off — likewise |
-| `D1C0000` | status → `D1C000B0XXYYFD2wr0` |
+| `D1C0000` | status → `D1C000B0XXYY<radio ID>0` |
 | `D1V0000` | radio type and firmware |
 | `P010010` | shut down |
+
+The five characters behind `YY` are the **radio ID of the set on RADIO
+1**, not part of a constant tail: they have the same shape as the IDs the
+read direction carries for other radios, `FDQTv` from a handheld and
+`G0f4e` in the WIRES-X capture, and the same five turn up again in the
+`D1V` identity reply. One box on the bench made them look fixed. The
+gateway reads them out of the status reply and puts them in the `D1F`
+header.
 
 In the status reply `YY` ending in `5` means transmitting. `00` is idle:
 during actual reception it read `11` and then `31` within 200 ms, which
@@ -299,6 +307,7 @@ YSF data channel carries them:
 | --- | --- | --- | --- |
 | `0:8` | prefix | `21016000` | `21002000` |
 | `8:18` | Dest | `28054G0f4e` | `*****FDQTv` |
+
 | `18:28` | Src | `W9NJP-JIM` | `DL4JC` |
 | `28:38` | Downlink | `DL4JC` | blank |
 | `38:48` | Uplink | `W9CEQ` | blank |
@@ -307,14 +316,15 @@ YSF data channel carries them:
 | `68:70` | flags | `09`, `0A` | `0C`, `0D`, `0F` |
 | `70:82` | position | zeroed | zeroed |
 
-The capture was taken with the node connected to a WIRES-X room, so its
-Dest and Rem fields carry the room number `28054`, the originating
-radio's ID `G0f4e` and the node number `97201`. None of that exists here:
-the gateway puts the broadcast `**********` in Dest, the station the
-reflector names in Src, itself in Downlink and the reflector's gateway in
-Uplink, and leaves the rest blank, which is what the read direction shows
-for unassigned fields. What the two differing prefix digits mean is
-unverified.
+Both directions put a five-character group in front of a five-character
+radio ID in Dest, and repeat the ID in Rem2: a handheld calling CQ sends
+`*****FDQTv`, the WIRES-X node sends its room number and `28054G0f4e`.
+The gateway builds the same shape out of `*****` and the radio ID the
+status reply gives it, and fills Src with the station the reflector
+names, Downlink with itself and Uplink with the reflector's gateway.
+Rem1 holds a node number in the capture and stays blank, which is what
+the read direction shows for unassigned fields. What the two differing
+prefix digits mean is unverified.
 
 The two characters at `68:70` looked like a counter and are not one:
 three transmissions in a row carried `09` before it moved to `0A`, and
