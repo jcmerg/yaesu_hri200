@@ -196,7 +196,13 @@ shows it. `XX` is a signal level and reaches at least `AA`; the 0..4 seen
 earlier was the range of one quiet capture, not the field.
 
 `D1P` carries the same body as the `D1C` reply and arrives unsolicited on
-state changes, so polling `D1C0000` is not needed.
+state changes, so polling `D1C0000` is not needed to follow the state —
+but it is still what the idle traffic consists of. The original software
+alternates `P010000` and `D1C0000`, once a second each and half a second
+apart, from the end of the start-up handshake to the end of the session.
+A gateway that sent only the PTT heartbeat had the radio fall back to the
+WIRES-X start screen within seconds of coming up, so the box appears to
+want the poll and not merely tolerate it.
 
 The reply to `P010000` turns from `B0 0    0000000` into
 `B1 0    0000000` while a signal is present.
@@ -276,6 +282,51 @@ bytes of DCH ahead of each block — are simply dropped, which is all
 `hri200_ysf.py` does. Going the other way they have to be generated, and
 the callsigns for the DCH would come from `D1F`.
 
+### D1F — the transmission header
+
+The radio strips sync, FICH and DCH on the way in and builds them again
+on the way out, so the callsigns for an outgoing transmission have to be
+handed over separately. `D1F` is where they go:
+
+```
+D1F 0052 <prefix, 8> <six 10-character fields> <counter, 2> <position, 12>
+```
+
+Field for field it is the write-direction twin of `D1G`, in the order the
+YSF data channel carries them:
+
+| Offset | Field | Write | Read |
+| --- | --- | --- | --- |
+| `0:8` | prefix | `21016000` | `21002000` |
+| `8:18` | Dest | `28054G0f4e` | `*****FDQTv` |
+| `18:28` | Src | `W9NJP-JIM` | `DL4JC` |
+| `28:38` | Downlink | `DL4JC` | blank |
+| `38:48` | Uplink | `W9CEQ` | blank |
+| `48:58` | Rem1 | `9720193753` | blank |
+| `58:68` | Rem2 | `28054G0f4e` | `     FDQTv` |
+| `68:70` | counter | `09`, `0A`, `0C` … | likewise |
+| `70:82` | position | zeroed | zeroed |
+
+The capture was taken with the node connected to a WIRES-X room, so its
+Dest and Rem fields carry the room number `28054`, the originating
+radio's ID `G0f4e` and the node number `97201`. None of that exists here:
+the gateway puts the broadcast `**********` in Dest, the station the
+reflector names in Src, itself in Downlink and the reflector's gateway in
+Uplink, and leaves the rest blank, which is what the read direction shows
+for unassigned fields. What the two differing prefix digits mean is
+unverified.
+
+Order matters at the start of a transmission. The original sends the
+header, then the first `D1E`, and only then `P100000` — the PTT follows
+the voice rather than leading it — and repeats the header once after five
+frames.
+
+Ahead of all that comes the node's own identification: `D1B00010`, a
+250-character `D1F` holding node number, name, city and the room it is
+connected to, then `P110000`, which keys the radio for a data burst
+instead of voice. That is the WIRES-X node ID announcement, it needs a
+registered node number, and the gateway does not send it.
+
 ### The read direction
 
 What the box sends while the radio receives mirrors the write direction
@@ -344,6 +395,14 @@ leading fields were empty on the device used here.
   carried the DG-ID, so whether the two can differ is untested.
 - The uplink has been verified against urfd's decoders but never against
   a radio: no reflector has yet heard a transmission through it.
+- The downlink has not been heard on the air either. A radio keyed
+  without a `D1F` header, and keyed ahead of the first voice frame,
+  answered with **TX PROHIBIT**; sending the header first and the PTT
+  behind the first frame is what the capture shows, but that it is the
+  cure has not been confirmed on hardware.
+- Whether `P110000` is specifically "key for data" or something wider is
+  a reading of three occurrences, each following the node-information
+  frame.
 - What the `slot` digits in `D1H` count, and how the tail of `D1G` is
   laid out, is only sketched. The gateway takes the callsign from the
   second field and ignores the rest.

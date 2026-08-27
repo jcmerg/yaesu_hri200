@@ -399,6 +399,8 @@ YSFD_LENGTH = 155
 FRAME_OFFSET = 35        # where the 120-byte air frame starts in a packet
 DEST = b"ALL" + b" " * 7
 
+D1F_PREFIX = "21016000"  # the read direction carries 21002000
+D1F_REPEAT = 5           # the capture repeats the header after five frames
 FRAME_INTERVAL = 0.100   # one voice frame per 100 ms
 COUNTER_STEP = 5         # the D1E and D1R counter runs per 20 ms subframe
 POLL_INTERVAL = 5.0      # YSFP keepalive
@@ -444,6 +446,34 @@ def d1e(counter, payload):
     return "D1E%04X%s" % (len(body), body)
 
 
+def d1f(dest, source, downlink, uplink, counter, rem1="", rem2=""):
+    """Build a D1F frame: the callsigns that go with a transmission.
+
+    Field for field the write-direction twin of the D1G frames the box
+    sends while receiving — an 8-character prefix, six 10-character
+    fields in the order the YSF data channel carries them, a counter
+    that steps once per transmission, and the position slot:
+
+        21016000 **********  DL4JC       ...  09 000000000000
+
+    The prefix reads `21016000` in the capture where the read direction
+    has `21002000`; what the differing digits mean is unverified. The
+    captured frame carries the WIRES-X room ID and the originating
+    radio's ID in Dest and Rem2, neither of which exists here, so those
+    fields go out the way the read direction shows unassigned ones.
+
+    The radio strips sync, FICH and DCH on receive and generates them on
+    transmit, so this is where the callsigns for the outgoing frame come
+    from. The original software sends it ahead of the first D1E of every
+    transmission.
+    """
+    fields = [dest, source, downlink, uplink, rem1, rem2]
+    body = D1F_PREFIX + "".join(("%-10s" % (f or ""))[:CALLSIGN_LENGTH]
+                                for f in fields)
+    body += "%02X" % (counter & 0xFF) + "0" * 12
+    return "D1F%04X%s" % (len(body), body)
+
+
 # ----------------------------------------------------------------------
 # reflector link
 
@@ -467,6 +497,8 @@ class YSFClient(object):
         self.running = False
         self.packets = 0
         self.skipped = 0
+        self.down_src = ""     # station the reflector is sending
+        self.down_via = ""     # gateway it came in through
 
     def start(self):
         self.sock.sendto(b"YSFP" + self.callsign, self.addr)
@@ -507,6 +539,8 @@ class YSFClient(object):
             if not packet.startswith(b"YSFD"):
                 continue
             self.packets += 1
+            self.down_via = packet[4:14].decode("ascii", "replace").strip()
+            self.down_src = packet[14:24].decode("ascii", "replace").strip()
             payload = voice_from_ysfd(packet)
             if payload is None:
                 self.skipped += 1
@@ -571,8 +605,10 @@ class HRI200Digital(HRI200):
         self.source = kwargs.pop("source", None)
         self.prefill = kwargs.pop("prefill", 5)
         self.tone_tx_hz = kwargs.pop("tone_tx_hz", None)
+        self.call = kwargs.pop("call", "")
         HRI200.__init__(self, *args, **kwargs)
         self.counter = 0
+        self.d1f_counter = 0
         self.streaming = False
         self.sent = 0
         self.total = 0
@@ -590,14 +626,36 @@ class HRI200Digital(HRI200):
                               narrow=self.narrow, digital=True, dgid=self.dgid,
                               tone_tx_hz=self.tone_tx_hz)
 
+    def _d1f(self):
+        """The header frame that goes ahead of a transmission.
+
+        Dest is the broadcast field the uplink also uses, Src the station
+        the reflector is sending, Downlink this gateway and Uplink the
+        gateway the traffic came in through. Rem1 and Rem2 hold WIRES-X
+        node data in the capture and stay blank here.
+        """
+        src = via = ""
+        if self.uplink is not None:
+            src = self.uplink.down_src
+            via = self.uplink.down_via
+        return d1f("**********", src or "?", self.call, via,
+                   self.d1f_counter)
+
     def _poll(self):
-        """Send one D1E every 100 ms and keep the PTT heartbeat alive.
+        """Send one D1E every 100 ms and keep the box polled.
 
         Playout waits for `prefill` frames so network jitter does not tear
         the stream apart, and stops after three empty ticks.
+
+        The idle traffic mirrors the original software: P010000 and
+        D1C0000 once a second each, half a second apart. The PTT
+        heartbeat on its own was not enough — the radio fell back to the
+        WIRES-X start screen a few seconds after start-up — so the poll
+        goes out whether or not its reply is wanted.
         """
         tick = time.time()
         beat = 0
+        poll_turn = False
         empty = 0
         while self.running:
             tick += FRAME_INTERVAL
@@ -627,10 +685,23 @@ class HRI200Digital(HRI200):
                     self.counter = (self.counter + COUNTER_STEP) & 0xFFFF
                     self.sent += 1
                     self.total += 1
+                    if not self.tx:
+                        # PTT follows the first frame rather than
+                        # leading it, which is the order in the capture.
+                        # Keyed the other way round, with no header sent
+                        # either, the radio answered TX PROHIBIT.
+                        self.tx = True
+                        self._send("P100000")
+                    elif self.sent == D1F_REPEAT:
+                        self._send(self._d1f())
                 beat += 1
-                if beat >= 10:
+                if beat >= 5:
                     beat = 0
-                    self._send("P100000" if self.tx else "P010000")
+                    poll_turn = not poll_turn
+                    if poll_turn:
+                        self._send("P100000" if self.tx else "P010000")
+                    else:
+                        self._send("D1C0000")
                 self._read()
             self._expire_rx()
 
@@ -652,6 +723,8 @@ class HRI200Digital(HRI200):
                 self._handle(chunk.decode("ascii", "replace"))
 
     def _handle(self, body):
+        if self.verbose:
+            print("  <- %s" % (body if len(body) < 70 else body[:67] + "..."))
         if body.startswith("D1R"):
             self._on_voice(body)
         elif body.startswith("D1H") and len(body) >= 37:
@@ -694,11 +767,13 @@ class HRI200Digital(HRI200):
             print("heard end (%d frames)" % self.rx_frames)
 
     def _start_stream(self):
+        """Announce the transmission, but leave the PTT to the first frame."""
         self.streaming = True
         self.counter = 0
-        self.tx = True
-        self._send_locked("P100000")
-        print("stream start")
+        self.d1f_counter = (self.d1f_counter + 1) & 0xFF
+        self._send_locked(self._d1f())
+        print("stream start (%s)"
+              % (self.uplink.down_src if self.uplink else "?"))
 
     def _stop_stream(self):
         self.streaming = False
@@ -817,7 +892,7 @@ def main():
 
     hri = HRI200Digital(args.hri, args.freq, args.shift, verbose=args.verbose,
                         power=args.power, dgid=args.dgid, source=pull,
-                        prefill=args.prefill)
+                        prefill=args.prefill, call=args.call.upper())
 
     hri.uplink = client
     hri.forward_gps = args.gps
