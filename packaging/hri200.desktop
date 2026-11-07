@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=HRI-200 bridge
+GenericName=Radio CAT bridge
+Comment=Drive a radio over CAT and offer it as a Kenwood TS-2000
+Exec=hri200-gui
+Icon=hri200
+Terminal=false
+Categories=HamRadio;Network;Utility;
+Keywords=hamradio;amateur;radio;cat;yaesu;kenwood;icom;
+StartupNotify=true
+StartupWMClass=hri200-gui

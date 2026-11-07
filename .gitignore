@@ -2,3 +2,16 @@
 *.dmslog*
 __pycache__/
 .DS_Store
+
+# build output
+build/
+dist/
+out/
+*.spec.bak
+
+# generated icons are reproducible with `make icons`
+packaging/icons/
+
+# virtual environments
+venv/
+.venv/

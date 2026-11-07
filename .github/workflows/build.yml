@@ -1,0 +1,108 @@
+name: build
+
+# Windows and Linux binaries cannot be produced from macOS and vice
+# versa, so each runner builds its own and the artifacts are what the
+# user downloads. Nothing has to be installed on the target machine
+# afterwards: the archives carry the Python runtime and pyserial.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: checks on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyserial
+      - name: CAT frame builders
+        run: python tests/test_radio_frames.py
+      - name: CAT server
+        run: python tests/test_cat_server.py
+      - name: backends over a pseudo terminal
+        run: python tests/test_radio_serial.py
+      - name: YSF frame encoders
+        run: python tests/test_ysf_frame.py
+      - name: node identification
+        run: python tests/test_node_id.py
+
+  build:
+    name: app for ${{ matrix.artifact }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: macos-latest
+            artifact: macos-arm64
+          - os: macos-13
+            artifact: macos-x86_64
+          - os: windows-latest
+            artifact: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tkinter on linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyserial pyinstaller
+      - name: icon
+        run: python packaging/make_icons.py
+      - name: build
+        run: python -m PyInstaller packaging/hri200.spec --noconfirm --distpath dist --workpath build
+      - name: package
+        run: python packaging/make_dist.py --dist dist --out out
+      - name: list
+        shell: bash
+        run: ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hri200-${{ matrix.artifact }}
+          path: |
+            out/*.zip
+            out/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: attach to a release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: flatten
+        run: |
+          mkdir -p upload
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) \
+            -exec mv {} upload/ \;
+          ls -la upload
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: upload/*
+          generate_release_notes: true
