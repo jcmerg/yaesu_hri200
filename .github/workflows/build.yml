@@ -87,8 +87,12 @@ jobs:
           # and calls damaged. Check the archive, not the build tree.
           tmp=$(mktemp -d)
           unzip -q out/*.zip -d "$tmp"
-          root="$tmp/HRI-200-bridge-"*
-          for app in "$root"/HRI-200*.app; do
+          cd "$tmp"
+          # An assignment does not glob, so the folder is looked up
+          # deliberately; "$root" below must then be quoted everywhere.
+          root=$(ls -d HRI-200-bridge-*)
+          echo "unpacked: $root"
+          for app in "$root"/HRI-*.app; do
             codesign --verify --deep --strict "$app"
             echo "signature ok: $app"
           done
