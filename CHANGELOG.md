@@ -64,6 +64,12 @@ to somebody who does not have Python.
   ignored rather than guessed at.
 - The `hri200` backend keeps its seven-second warm-up; the others do
   not wait.
+- The macOS archive is made with `ditto`, not `zipfile`. Python's
+  zipfile cannot store a symlink, and the framework inside an app bundle
+  is a tree of them: the archive unpacked into a bundle with a broken
+  code signature, which macOS reports as "damaged". Extended attributes
+  are left out for the same reason - they reappear as `._name` files
+  inside the signed bundle.
 - The Linux archives are built on Ubuntu 22.04 and need glibc 2.35 or
   newer. A binary links against the C library it was built with; built
   on the newest runner it would only start on the newest distributions.

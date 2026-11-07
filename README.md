@@ -183,9 +183,20 @@ are built on Ubuntu 22.04 and need glibc 2.35 or newer (Debian 12,
 Ubuntu 22.04, RHEL 9 and later), macOS needs 11 or newer, Windows needs
 10 or newer.
 
-Nothing is code-signed. Windows SmartScreen and macOS Gatekeeper will
-say so the first time; on macOS the way through is right-click, Open,
-or `xattr -dr com.apple.quarantine "HRI-200 bridge.app"`.
+Nothing is code-signed, so both systems will say so the first time.
+Windows shows a SmartScreen warning with a "More info" link and a "Run
+anyway" button. macOS refuses to start the app until it is allowed:
+
+- macOS 15 and later: try to open it once, then System Settings →
+  Privacy & Security → "Open Anyway".
+- anything older: right-click the app and choose Open.
+- either way, `xattr -dr com.apple.quarantine "HRI-200 bridge.app"`
+  clears the mark instead, if you would rather not be asked.
+
+If macOS says the app is *damaged* rather than *not verified*, the
+bundle was unpacked badly - the framework inside is a tree of symlinks,
+and an archiver that resolves them breaks the code signature. Unpack
+with `ditto -x -k` or the Finder, not with a tool that flattens links.
 
 ## YSF gateway
 

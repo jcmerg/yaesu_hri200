@@ -30,6 +30,7 @@ import os
 import platform
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -147,16 +148,38 @@ def build_macos(dist, out, stage):
     if not os.path.isdir(stage):
         os.makedirs(stage)
     app = os.path.join(dist, "HRI-200 bridge.app")
+    app_copy = os.path.join(stage, "HRI-200 bridge.app")
     if os.path.isdir(app):
-        shutil.copytree(app, os.path.join(stage, "HRI-200 bridge.app"),
-                        symlinks=True)
+        # symlinks=True matters: the framework inside the bundle is a
+        # tree of links, and a copy that resolves them is a different
+        # bundle whose code signature no longer matches. macOS calls
+        # that "damaged" and refuses to start it.
+        shutil.copytree(app, app_copy, symlinks=True)
     shutil.copy2(find(dist, "hri200-bridge"),
                  os.path.join(stage, "hri200-bridge"))
     with open(os.path.join(stage, "README.txt"), "w") as fh:
         fh.write(README_TXT)
     archive = os.path.join(out, "HRI-200-bridge-%s-macos-%s.zip"
                            % (VERSION, arch_tag()))
-    zip_dir(stage, archive)
+    # ditto, not zipfile: Python's zipfile cannot store a symlink, so it
+    # writes the target's contents instead and the archive is not the
+    # bundle it claims to be. ditto is Apple's own tool for this.
+    #
+    # --norsrc --noextattr keep extended attributes out of the archive.
+    # Stored as they are, they reappear on extraction as ._name files
+    # inside the framework, and a stray file inside a signed bundle
+    # makes macOS report the app as damaged.
+    archive = os.path.abspath(archive)
+    if os.path.isdir(app):
+        subprocess.check_call([
+            "ditto", "-c", "-k", "--norsrc", "--noextattr", "--keepParent",
+            app_copy, archive])
+        # The other two files ride along in the same zip.
+        with zipfile.ZipFile(archive, "a", zipfile.ZIP_DEFLATED) as zf:
+            for name in ("hri200-bridge", "README.txt"):
+                zf.write(os.path.join(stage, name), name)
+    else:
+        zip_dir(stage, archive)
     return archive
 
 

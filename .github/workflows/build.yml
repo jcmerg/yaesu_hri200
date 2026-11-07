@@ -78,6 +78,20 @@ jobs:
         run: python -m PyInstaller packaging/hri200.spec --noconfirm --distpath dist --workpath build
       - name: package
         run: python packaging/make_dist.py --dist dist --out out
+      - name: the macOS bundle survived the packaging
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # An archive whose symlinks were flattened, or that carries
+          # stray ._ files, unpacks into a bundle macOS refuses to start
+          # and calls damaged. Check the archive, not the build tree.
+          tmp=$(mktemp -d)
+          unzip -q out/*.zip -d "$tmp"
+          codesign --verify --deep --strict "$tmp/HRI-200 bridge.app"
+          links=$(find "$tmp/HRI-200 bridge.app" -type l | wc -l)
+          echo "symlinks in the unpacked bundle: $links"
+          test "$links" -gt 0
+          test "$(find "$tmp/HRI-200 bridge.app" -name '._*' | wc -l)" -eq 0
       - name: the bridge starts
         shell: bash
         run: |
