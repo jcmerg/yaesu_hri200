@@ -64,6 +64,9 @@ to somebody who does not have Python.
   ignored rather than guessed at.
 - The `hri200` backend keeps its seven-second warm-up; the others do
   not wait.
+- The Linux archives are built on Ubuntu 22.04 and need glibc 2.35 or
+  newer. A binary links against the C library it was built with; built
+  on the newest runner it would only start on the newest distributions.
 
 ## Earlier work
 

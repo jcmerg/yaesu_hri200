@@ -177,6 +177,12 @@ attaches the zips and tarballs to the release. The version lives in
 `packaging/make_dist.py` and in the tag; see [CHANGELOG.md](CHANGELOG.md)
 for what is in each one.
 
+What an archive will run on is decided by what it was built on, since
+the Python runtime is linked against the local C library: Linux binaries
+are built on Ubuntu 22.04 and need glibc 2.35 or newer (Debian 12,
+Ubuntu 22.04, RHEL 9 and later), macOS needs 11 or newer, Windows needs
+10 or newer.
+
 Nothing is code-signed. Windows SmartScreen and macOS Gatekeeper will
 say so the first time; on macOS the way through is right-click, Open,
 or `xattr -dr com.apple.quarantine "HRI-200 bridge.app"`.

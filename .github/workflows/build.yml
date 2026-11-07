@@ -48,7 +48,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Built on 22.04 on purpose: a binary links against the glibc
+          # it was built with, so ubuntu-latest would produce something
+          # that only runs on the newest distributions.
+          - os: ubuntu-22.04
             artifact: linux-x86_64
           - os: macos-latest
             artifact: macos-arm64
@@ -75,6 +78,15 @@ jobs:
         run: python -m PyInstaller packaging/hri200.spec --noconfirm --distpath dist --workpath build
       - name: package
         run: python packaging/make_dist.py --dist dist --out out
+      - name: the bridge starts
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./dist/hri200-bridge.exe --help > /dev/null
+          else
+            ./dist/hri200-bridge --help > /dev/null
+          fi
+          echo "ok"
       - name: list
         shell: bash
         run: ls -la out
