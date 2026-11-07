@@ -45,7 +45,13 @@ class FakeKenwood(threading.Thread):
             try:
                 buf += os.read(self.fd, 256)
             except OSError:
-                return
+                # On Linux a read from the master returns EIO whenever
+                # no slave is open, which is exactly the state before
+                # the backend opens its port. Treating that as the end
+                # of the conversation ends the thread before it has
+                # heard anything.
+                time.sleep(0.02)
+                continue
             while b";" in buf:
                 cmd, buf = buf.split(b";", 1)
                 cmd = cmd.strip().decode("ascii", "ignore")
