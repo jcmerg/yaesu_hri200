@@ -12,6 +12,19 @@ The stronger check is `reference_check.cpp`: it runs urfd's own
 `CYSFFICH::decode`, `processHeaderData` and `readVDMode2Data` over the
 packets, which is what a reflector does with them.
 
+`test_radio_frames.py` checks the CAT frame builders in `hri200_radio.py`
+without a radio. A nibble in the wrong place does not raise - it tunes
+the radio somewhere else - so the frequency encodings are compared
+against values worked out by hand: Yaesu's big-endian BCD and its
+10 Hz escape above 100 MHz, Kenwood's 11-digit ASCII, and CI-V's
+little-endian BCD, which is the reverse of Yaesu's and a classic source
+of "the radio went to 5 MHz" bugs.
+
+`test_cat_server.py` drives the TS-2000 server over a pseudo terminal:
+`ID;` has to answer `ID019;`, `TX;` has to key the radio, `FA;` has to
+report the frequency, and a command split across two reads has to
+survive. It needs a POSIX pseudo terminal and is skipped on Windows.
+
 `test_node_id.py` needs neither urfd nor hardware: it rebuilds the node
 identification frame from the capture byte for byte and checks the
 checksum against all three captured frames, including the two taken
