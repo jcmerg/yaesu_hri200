@@ -1,10 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the bridge and the control panel.
+"""PyInstaller spec for the bridges and their control panels.
 
-Two programs come out of the same source tree:
+Three programs come out of the same source tree:
 
     hri200-bridge     the CAT bridge, console, one file
-    hri200-gui        the control panel, windowed
+    hri200-gui        its control panel, windowed
+    hri200-ysf-gui    the control panel for the YSF gateway, windowed
 
     python3 packaging/make_icons.py
     python -m PyInstaller packaging/hri200.spec --noconfirm
@@ -47,7 +48,9 @@ HIDDEN = [
     "serial",
     "serial.tools",
     "serial.tools.list_ports",
-    "hri200_radio",
+    "hri200_proto",
+    "hri200_cat",
+    "hri200_ysf",
 ]
 
 EXCLUDES = [
@@ -88,51 +91,61 @@ bridge_exe = EXE(
     icon=icon_for(sys.platform),
 )
 
-# -- the control panel -------------------------------------------------
-gui = analyse("hri200_gui.py")
-gui_pyz = PYZ(gui.pure, gui.zipped_data)
-
+# -- the control panels ------------------------------------------------
+#
 # macOS needs a directory so the .app can wrap it; the other two need a
 # single file the user can double-click without a folder appearing.
 GUI_ONEDIR = sys.platform == "darwin"
 
-gui_exe = EXE(
-    gui_pyz,
-    gui.scripts,
-    [] if GUI_ONEDIR else gui.binaries,
-    [] if GUI_ONEDIR else gui.datas,
-    exclude_binaries=GUI_ONEDIR,
-    name="hri200-gui",
-    debug=False,
-    strip=False,
-    upx=False,
-    console=False,
-    disable_windowed_traceback=False,
-    icon=icon_for(sys.platform),
-)
 
-if GUI_ONEDIR:
-    gui_coll = COLLECT(
-        gui_exe,
-        gui.binaries,
-        gui.datas,
+def build_panel(script, name, bundle_name, bundle_id):
+    analysis = analyse(script)
+    pyz = PYZ(analysis.pure, analysis.zipped_data)
+    exe = EXE(
+        pyz,
+        analysis.scripts,
+        [] if GUI_ONEDIR else analysis.binaries,
+        [] if GUI_ONEDIR else analysis.datas,
+        exclude_binaries=GUI_ONEDIR,
+        name=name,
+        debug=False,
         strip=False,
         upx=False,
-        name="hri200-gui",
+        console=False,
+        disable_windowed_traceback=False,
+        icon=icon_for(sys.platform),
     )
+    if not GUI_ONEDIR:
+        return exe
+    coll = COLLECT(
+        exe,
+        analysis.binaries,
+        analysis.datas,
+        strip=False,
+        upx=False,
+        name=name,
+    )
+    if sys.platform == "darwin":
+        BUNDLE(
+            coll,
+            name=bundle_name,
+            icon=ICON_ICNS if os.path.exists(ICON_ICNS) else None,
+            bundle_identifier=bundle_id,
+            info_plist={
+                "CFBundleName": bundle_name[:-4] if bundle_name.endswith(
+                    ".app") else bundle_name,
+                "CFBundleDisplayName": bundle_name[:-4] if bundle_name.endswith(
+                    ".app") else bundle_name,
+                "CFBundleShortVersionString": "2.0",
+                "NSHighResolutionCapable": True,
+                "LSMinimumSystemVersion": "10.13",
+                "NSHumanReadableCopyright": "",
+            },
+        )
+    return coll
 
-if sys.platform == "darwin":
-    gui_app = BUNDLE(
-        gui_coll,
-        name="HRI-200 bridge.app",
-        icon=ICON_ICNS if os.path.exists(ICON_ICNS) else None,
-        bundle_identifier="org.yaesu.hri200.bridge",
-        info_plist={
-            "CFBundleName": "HRI-200 bridge",
-            "CFBundleDisplayName": "HRI-200 bridge",
-            "CFBundleShortVersionString": "1.0",
-            "NSHighResolutionCapable": True,
-            "LSMinimumSystemVersion": "10.13",
-            "NSHumanReadableCopyright": "",
-        },
-    )
+
+build_panel("hri200_gui.py", "hri200-gui",
+            "HRI-200 bridge.app", "org.yaesu.hri200.bridge")
+build_panel("hri200_ysf_gui.py", "hri200-ysf-gui",
+            "HRI-200 YSF gateway.app", "org.yaesu.hri200.ysf")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the TS-2000 CAT server over a pseudo terminal.
+"""Drive the CAT server over a pseudo terminal.
 
 The server is the half of the bridge that other software talks to, so it
 is worth checking without a radio: a client sends "ID;" and has to get
@@ -47,6 +47,9 @@ class FakeRadio(object):
         self.power = step
         self.calls.append(("power", step))
 
+    def smeter(self):
+        return min(30, self.rx_level * 7)
+
 
 def read_reply(fd, seconds=1.0):
     out = b""
@@ -67,6 +70,65 @@ def read_reply(fd, seconds=1.0):
     return out
 
 
+def round_trip(proto, send_bytes, expect_bytes, timeout=1.0):
+    """Send one frame on a fresh pseudo terminal and read the answer."""
+    radio = FakeRadio()
+    master, slave = os.openpty()
+    name = os.ttyname(slave)
+    os.close(slave)
+    server = hri200_cat.CatServer(radio, name, proto=proto, verbose=False,
+                                  line_ptt="off", address=0x88)
+    try:
+        os.write(master, send_bytes)
+        for _ in range(6):
+            server.pump()
+        got = read_reply(master, timeout)
+    finally:
+        try:
+            server.ser.close()
+        except Exception:
+            pass
+        os.close(master)
+    return got, radio
+
+
+def protocol_rounds():
+    """The same server, answering in the other two dialects."""
+    checks = []
+
+    got, radio = round_trip("yaesu", bytes([0, 0, 0, 0, 0x03]),
+                            b"\x14\x48\x50\x00\x03")
+    checks.append(("yaesu answers a frequency read over the port", got))
+
+    got, radio = round_trip("yaesu", bytes([0, 0, 0, 0, 0x08]), b"")
+    checks.append(("yaesu PTT on keys the radio", radio.tx is True))
+
+    got, radio = round_trip("civ", bytes.fromhex("FEFE88E004FD"),
+                            bytes.fromhex("FEFEE088040000854401FD"))
+    checks.append(("civ answers a frequency read over the port",
+                   got == bytes.fromhex("FEFEE088040000854401FD")))
+
+    got, radio = round_trip("civ", bytes.fromhex("FEFE88E0050000100700FD"),
+                            b"")
+    checks.append(("civ set frequency retunes the box",
+                   abs(radio.freq_mhz - 7.1) < 1e-9))
+
+    # Auto has to recognise the dialect from the traffic itself.
+    got, _radio = round_trip("auto", bytes.fromhex("FEFE88E004FD"),
+                             bytes.fromhex("FEFEE088040000854401FD"))
+    checks.append(("auto recognises CI-V and answers it",
+                   got == bytes.fromhex("FEFEE088040000854401FD")))
+
+    got, _radio = round_trip("auto", b"FA;", b"FA00144850000;")
+    checks.append(("auto recognises Kenwood and answers it",
+                   got == b"FA00144850000;"))
+
+    got, _radio = round_trip("auto", bytes([0, 0, 0, 0, 0x03]),
+                             b"\x14\x48\x50\x00\x03")
+    checks.append(("auto recognises Yaesu and answers it", got))
+    return checks
+
+
 def main():
     if os.name != "posix":
         print("  skipped: needs a pseudo terminal")
@@ -77,8 +139,8 @@ def main():
     slave_name = os.ttyname(slave)
     os.close(slave)
 
-    server = hri200_cat.TS2000(radio, slave_name, verbose=False,
-                               line_ptt="off")
+    server = hri200_cat.CatServer(radio, slave_name, proto="kenwood",
+                                  verbose=False, line_ptt="off")
 
     def send(text):
         os.write(master, text.encode("ascii"))
@@ -156,6 +218,8 @@ def main():
         server.ser.close()
     except Exception:
         pass
+
+    checks.extend(protocol_rounds())
 
     width = max(len(name) for name, _ok in checks)
     failed = 0

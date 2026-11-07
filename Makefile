@@ -26,9 +26,9 @@ all: test
 test:
 	$(PYTHON) tests/test_radio_frames.py
 	$(PYTHON) tests/test_cat_server.py
-	$(PYTHON) tests/test_radio_serial.py
 	$(PYTHON) tests/test_ysf_frame.py
 	$(PYTHON) tests/test_node_id.py
+	$(PYTHON) tests/test_ysf_gui_smoke.py
 
 icons:
 	$(PYTHON) packaging/make_icons.py

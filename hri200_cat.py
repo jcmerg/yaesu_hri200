@@ -1,45 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hri200_cat.py - use a Yaesu HRI-200 as a generic audio + PTT interface
+hri200_cat.py - use a Yaesu HRI-200 as a CAT radio for other software
 
 The HRI-200 is Yaesu's WIRES-X interface box. It contains a USB sound
 card and a serial control channel, but it only speaks Yaesu's own
 protocol and is useless outside the WIRES-X software as shipped.
 
-This script talks that protocol on one side and emulates a Kenwood
-TS-2000 on the other, so the box can be driven by flrig, fldigi,
-Direwolf or anything else that speaks CAT.
+This script talks that protocol on one side and answers as a CAT radio
+on the other, so the box can be driven by flrig, fldigi, Direwolf or
+anything else that speaks CAT:
 
     fldigi / Direwolf -> flrig -> COM10 =[com0com]= COM11 -> this script
     -> COM7 -> HRI-200 -> radio
 
-The node radio is an FM set, so this covers the modes that work over
-FM - packet and APRS, SSTV, the fldigi modes. It is not an SSB rig,
-and the weak-signal modes that assume one do not belong here.
+The HRI-200 is the radio; what changes is what the software is told it
+is talking to. Three dialects are available, and by default the script
+works out which one is in use from the first bytes that arrive:
 
-    In flrig: Rig = TS-2000, Port = COM10, baud rate irrelevant.
+    kenwood   ASCII, "FA00014485000;"    TS-2000 profile, what most
+                                         software speaks
+    yaesu     5-byte binary, 0x03        legacy FT-817/857 profiles
+    civ       Icom CI-V, FE FE .. FD     Icom-oriented software
+
+    py -3 hri200_cat.py COM11                       # auto
+    py -3 hri200_cat.py COM11 --proto kenwood       # force one
+    py -3 hri200_cat.py COM11 --proto civ --civ-address 88
+
+In flrig: pick a rig that speaks the chosen protocol, and the *other*
+end of the null-modem pair as the port. The baud rate does not matter.
+
+The node radio is an FM set, so this covers what works over FM: packet
+and APRS, SSTV, the fldigi modes. There is no SSB in the path, and the
+weak-signal modes that assume it do not belong here.
 
 Audio is not touched by this script: the HRI-200 registers as a
-standard USB audio device, so select it directly in your application.
+standard USB audio device, so pick it directly in your application.
 
-Single file, pyserial is the only dependency.
-
-    py -3 hri200_cat.py COM11
-    py -3 hri200_cat.py COM11 --hri COM7 --freq 144.85 --power low -v
-
-Without the HRI-200
---------------------
-The box is only one way to key a radio. With --radio the same bridge
-drives a radio over its own CAT port instead, which needs neither a
-WIRES-X box nor its protocol:
-
-    py -3 hri200_cat.py COM11 --radio yaesu --hri COM6 --freq 145.5
-
-The backends live in hri200_radio.py: the HRI-200 itself, Yaesu 5-byte
-CAT, Kenwood ASCII CAT and Icom CI-V. Audio then comes from whatever
-sound card is wired to the radio, and PTT from the CAT command rather
-than the box.
+pyserial is the only dependency. The dialects live in hri200_proto.py.
 
 
 PROTOCOL
@@ -103,6 +101,8 @@ except ImportError:
     # Importable without pyserial so that other modules can reuse the
     # frame builders and their dry-run paths.
     serial = None
+
+import hri200_proto
 
 SOH = b"\x01"
 EOT = b"\x04"
@@ -254,19 +254,6 @@ def parse_r6423(resp):
         info["timestamp"] = "%s-%s-%s %s:%s:%s" % (
             t[0:4], t[4:6], t[6:8], t[8:10], t[10:12], t[12:14])
     return info
-
-
-# Nominal watts per step, used only to translate the TS-2000 PC
-# command. The HRI-200 knows nothing but high, mid and low.
-PC_WATT = {"high": 50, "mid": 20, "low": 5}
-
-
-def watt_to_step(w):
-    if w <= 10:
-        return "low"
-    if w <= 30:
-        return "mid"
-    return "high"
 
 
 class HRI200(object):
@@ -433,20 +420,42 @@ class HRI200(object):
             return False
         return True
 
+    def smeter(self):
+        """The XX digit of D1C on the 0..30 bar scale the protocols use.
 
-class TS2000(object):
-    """Minimal Kenwood TS-2000 CAT server on a serial port."""
+        Four steps is all the box reports, so this is a coarse indication
+        and not an S-meter; the mapping is the same one the TS-2000
+        emulation has always used.
+        """
+        return min(30, self.rx_level * 7)
 
-    def __init__(self, hri, port, baud=38400, verbose=False, line_ptt="rts"):
+
+class CatServer(object):
+    """The virtual port: a CAT radio on one side, the HRI-200 on the other.
+
+    Which radio the software thinks it is talking to is decided by the
+    protocol object; this class only moves bytes and watches the control
+    lines. Nothing about the HRI-200 changes with the protocol, which is
+    the point: the box is the radio, the dialect is a mask.
+
+    PTT comes from either path and the radio keys as soon as one of them
+    asks for it:
+
+      CAT   TX;/RX; for Kenwood, 0x08/0x88 for Yaesu, 0x1C for CI-V
+      line  the application's RTS arrives here as CTS, its DTR as DSR
+    """
+
+    def __init__(self, hri, port, baud=38400, proto="auto", verbose=False,
+                 line_ptt="rts", address=0x88, yaesu_unit=None):
         self.hri = hri
         self.verbose = verbose
-        self.line_ptt = line_ptt   # off | rts | dtr | both
-        self.cat_tx = False        # requested via TX;/RX;
-        self.line_tx = False       # requested via a control line
-        self.mode = "4"            # 4 = FM
-        self.buf = ""              # partial command from the last read
+        self.line_ptt = line_ptt       # off | rts | dtr | both
+        self.line_tx = False           # requested via a control line
+        self.protocol = hri200_proto.make(
+            proto, hri, verbose=verbose, address=address, unit=yaesu_unit)
         self.ser = serial.Serial(port, baud, timeout=0.05)
 
+    # -- control lines -------------------------------------------------
     def read_lines(self):
         """Evaluate the control lines of the other end.
 
@@ -461,110 +470,46 @@ class TS2000(object):
         return rts or dtr
 
     def apply_ptt(self):
-        """Transmit as soon as either path asks for it."""
-        self.hri.set_ptt(self.cat_tx or self.line_tx)
+        self.hri.set_ptt(self.line_tx)
 
-    def freq_hz(self):
-        return int(round(self.hri.freq_mhz * 1e6))
-
-    def smeter(self):
-        """Stretch rx_level 0..4 onto the TS-2000 scale 0..30.
-        A coarse step indicator, not a real S-meter."""
-        return min(30, self.hri.rx_level * 7)
-
-    def answer(self, cmd):
-        c = cmd[:2]
-        if cmd == "ID":
-            return "ID019;"
-        if c == "PS":
-            return "PS1;"
-        if c == "AI":
-            return "AI0;"
-        if c in ("FA", "FB"):
-            if len(cmd) > 2 and cmd[2:].isdigit():
-                self.hri.set_freq(int(cmd[2:]) / 1e6)
-                return None
-            return "%s%011d;" % (c, self.freq_hz())
-        if c == "MD":
-            if len(cmd) > 2:
-                self.mode = cmd[2]
-                return None
-            return "MD%s;" % self.mode
-        if c == "SM":
-            return "SM0%04d;" % self.smeter()
-        if cmd.startswith("TX"):
-            self.cat_tx = True
-            self.apply_ptt()
-            return None
-        if cmd == "RX":
-            self.cat_tx = False
-            self.apply_ptt()
-            return None
-        if c == "IF":
-            # 38 characters including "IF" and ";":
-            #   P1 freq 11, P2 step 4, P3 RIT 6, P4 RIT, P5 XIT,
-            #   P6 bank, P7 channel 2, P8 TX/RX, P9 mode, P10 VFO,
-            #   P11 scan, P12 split, P13 tone, P14 tone no. 2, P15
-            return ("IF"
-                    + "%011d" % self.freq_hz()
-                    + "0000"
-                    + "+00000"
-                    + "0" + "0" + "0" + "00"
-                    + ("1" if self.hri.tx else "0")
-                    + self.mode
-                    + "0" + "0" + "0" + "0" + "00" + "0"
-                    + ";")
-        if c in ("FR", "FT"):
-            return "%s0;" % c
-        if c == "AG":
-            return "AG0000;"
-        if c == "RF":
-            return "RF0000;"
-        if c == "SQ":
-            return "SQ0000;"
-        if c == "PC":
-            if len(cmd) > 2 and cmd[2:].isdigit():
-                self.hri.set_power(watt_to_step(int(cmd[2:])))
-                return None
-            return "PC%03d;" % PC_WATT[self.hri.power]
-        return "?;"
-
+    # -- serving -------------------------------------------------------
     def pump(self):
-        """Serve one read cycle. Returns True if something was answered.
+        """Serve one read cycle. Returns True if something happened.
 
-        Split out of serve() so a caller with its own event loop - the
-        GUI, or a test - can drive the server without owning the thread
-        that serve() sits in.
+        Exists as its own method so a caller with an event loop - the
+        GUI, or a test - can drive the server without owning a thread.
         """
-        answered = False
+        worked = False
         data = self.ser.read(64)
         if data:
-            self.buf += data.decode("ascii", "ignore")
-            while ";" in self.buf:
-                cmd, self.buf = self.buf.split(";", 1)
-                cmd = cmd.strip()
-                if not cmd:
-                    continue
-                rep = self.answer(cmd)
-                if self.verbose:
-                    print("  [cat] %-14s -> %s" % (cmd, rep))
-                if rep:
-                    self.ser.write(rep.encode("ascii"))
-                answered = True
+            reply = self.protocol.feed(data)
+            if reply:
+                self.ser.write(reply)
+            worked = True
         else:
             time.sleep(0.01)
+
+        polled = self.protocol.poll()
+        if polled:
+            self.ser.write(polled)
+            worked = True
 
         if self.line_ptt != "off":
             line = self.read_lines()
             if line != self.line_tx:
                 self.line_tx = line
                 self.apply_ptt()
-                answered = True
-        return answered
+                worked = True
+        return worked
+
+    def describe(self):
+        return self.protocol.label
 
     def serve(self):
-        print("CAT server on %s - in flrig pick Rig = TS-2000 and the "
-              "other end of the pair" % self.ser.port)
+        print("CAT server on %s as %s"
+              % (self.ser.port, self.protocol.label))
+        print("  in flrig pick a rig that speaks this protocol, then the "
+              "other end of the pair")
         if self.line_ptt != "off":
             print("PTT also via control line: %s" % self.line_ptt)
             print("  (the application's RTS arrives as CTS, its DTR as DSR)")
@@ -579,22 +524,46 @@ class TS2000(object):
                 print("  pair holds the line high permanently - in which")
                 print("  case use --line-ptt off and PTT via CAT.")
         while True:
-            self.pump()
+            try:
+                self.pump()
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                print("CAT port: %s" % exc)
+                time.sleep(0.2)
+
+
+def list_serial_ports():
+    """Every serial port the system admits to having, sorted.
+
+    Description strings are the driver's own; they are what tells the
+    operator which of three USB cables is the box.
+    """
+    if serial is None:
+        return []
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return []
+    return sorted((info.device, info.description or "")
+                  for info in list_ports.comports())
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Use a Yaesu HRI-200 as a TS-2000 compatible interface")
+        description="Use a Yaesu HRI-200 as a CAT radio for other software")
     ap.add_argument("catport", help="virtual port for flrig, e.g. COM11")
-    ap.add_argument("--hri", default="COM7",
-                    help="HRI-200 port, or the radio's CAT port with --radio")
-    ap.add_argument("--radio", default="hri200",
-                    choices=["hri200", "yaesu", "kenwood", "icom"],
-                    help="which backend drives the radio (default hri200)")
-    ap.add_argument("--radiobaud", type=int, default=None,
-                    help="baud rate of the radio's CAT port")
+    ap.add_argument("--hri", default="COM7", help="HRI-200 port")
+    ap.add_argument("--proto", default="auto",
+                    choices=["auto", "kenwood", "yaesu", "civ"],
+                    help="dialect to answer in on the virtual port "
+                         "(default auto: work it out from the first bytes)")
     ap.add_argument("--civ-address", default="88",
-                    help="Icom CI-V address in hex (default 88)")
+                    help="CI-V address the emulated radio answers to, hex")
+    ap.add_argument("--yaesu-unit", type=int, default=None,
+                    choices=[1, 10],
+                    help="frequency unit for the Yaesu 5-byte field: 1 Hz "
+                         "or 10 Hz; default: decided per frequency")
     ap.add_argument("--freq", type=float, default=144.85, help="MHz")
     ap.add_argument("--shift", type=float, default=0.0, help="offset in MHz")
     ap.add_argument("--power", default="mid", choices=["high", "mid", "low"])
@@ -612,36 +581,23 @@ def main():
     if serial is None:
         sys.exit("pyserial missing:  py -3 -m pip install pyserial")
 
-    if args.radio == "hri200":
-        hri = HRI200(args.hri, args.freq, args.shift, verbose=args.verbose,
-                     power=args.power, tone_hz=args.tone, sql=args.sql,
-                     narrow=args.narrow)
-    else:
-        import hri200_radio
-        try:
-            address = int(args.civ_address, 16)
-        except ValueError:
-            sys.exit("--civ-address must be hex, e.g. 88")
-        radio = hri200_radio.create_radio(
-            args.radio, args.hri, verbose=args.verbose,
-            baudrate=args.radiobaud, address=address, freq_mhz=args.freq)
-        radio.freq_mhz = args.freq
-        radio.shift_mhz = args.shift
-        radio.power = args.power
-        radio.tone_hz = args.tone
-        radio.sql = args.sql
-        radio.narrow = args.narrow
-        radio.mode = "fm-n" if args.narrow else "fm"
-        hri = hri200_radio.CatHandle(radio)
+    try:
+        address = int(args.civ_address, 16)
+    except ValueError:
+        sys.exit("--civ-address must be hex, e.g. 88")
 
+    hri = HRI200(args.hri, args.freq, args.shift, verbose=args.verbose,
+                 power=args.power, tone_hz=args.tone, sql=args.sql,
+                 narrow=args.narrow)
     try:
         hri.open()
     except Exception as exc:
-        sys.exit("radio setup failed: %s" % exc)
+        sys.exit("HRI-200 setup failed: %s" % exc)
 
     try:
-        cat = TS2000(hri, args.catport, args.catbaud,
-                     verbose=args.verbose, line_ptt=args.line_ptt)
+        cat = CatServer(hri, args.catport, args.catbaud, proto=args.proto,
+                        verbose=args.verbose, line_ptt=args.line_ptt,
+                        address=address, yaesu_unit=args.yaesu_unit)
     except Exception as exc:
         hri.close()
         sys.exit("CAT port %s: %s" % (args.catport, exc))

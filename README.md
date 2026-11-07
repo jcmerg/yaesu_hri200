@@ -26,17 +26,16 @@ WIRES-X in the path:
 
 See [YSF gateway](#ysf-gateway).
 
-**`hri200_gui.py`** is a control panel for either bridge, and
-**`hri200_radio.py`** is the layer that lets the same bridge drive a
-radio over its own CAT port instead of through the box — see
-[Other radios](#other-radios).
+**`hri200_gui.py`** is a control panel for the CAT bridge,
+**`hri200_ysf_gui.py`** the same for the YSF gateway, and
+**`hri200_proto.py`** holds the CAT dialects the virtual port can answer
+in — see [Which CAT the software sees](#which-cat-the-software-sees).
 
 ## Requirements
 
 - Python 3.6+
 - [pyserial](https://pypi.org/project/pyserial/)
-- The HRI-200 and a compatible radio on RADIO 1, **or** any radio with a
-  CAT port (see [Other radios](#other-radios))
+- The HRI-200 and a compatible radio on RADIO 1
 - For `hri200_cat.py` only: a virtual null-modem pair, e.g.
   [com0com](https://sourceforge.net/projects/com0com/)
 - For the GUI only: Tkinter, which is in the standard library on Windows
@@ -59,10 +58,10 @@ with its reply, which is useful the first time flrig initialises.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `catport` | — | virtual port this script listens on |
-| `--hri` | `COM7` | HRI-200 serial port, or the radio's CAT port with `--radio` |
-| `--radio` | `hri200` | `hri200`, `yaesu`, `kenwood` or `icom` |
-| `--radiobaud` | per backend | baud rate of the radio's CAT port |
-| `--civ-address` | `88` | Icom CI-V address, hex |
+| `--hri` | `COM7` | HRI-200 serial port |
+| `--proto` | `auto` | `auto`, `kenwood`, `yaesu` or `civ` on the virtual port |
+| `--civ-address` | `88` | CI-V address the emulated radio answers to, hex |
+| `--yaesu-unit` | auto | `1` or `10` Hz for the Yaesu frequency field |
 | `--freq` | `144.85` | frequency in MHz |
 | `--shift` | `0.0` | offset in MHz |
 | `--power` | `mid` | `high`, `mid` or `low` |
@@ -86,68 +85,83 @@ for it.
   script prints the initial line state at start-up and warns if a line
   is already asserted.
 
-## Other radios
+## Which CAT the software sees
 
-The HRI-200 is a convenient way to get a sound card and a PTT line for
-a radio that has no data interface of its own. For a radio that *does*
-have a CAT port, the box sits in the way for nothing. `--radio` drops
-it and drives the radio directly, with the same TS-2000 server on the
-other side:
-
-    fldigi / Direwolf → flrig → COM10 =[com0com]= COM11 → hri200_cat.py
-                                                       → COM6 → radio
+The HRI-200 is the radio: one serial port, the box's own protocol, and
+audio through its USB sound card. What varies is the *other* side.
+Software that speaks CAT does not agree on what CAT is, so the virtual
+port can answer in three dialects, and by default works out which one is
+in use from the first bytes that arrive:
 
 ```
-python hri200_cat.py COM11 --radio yaesu --hri COM6 --freq 145.5
-python hri200_cat.py COM11 --radio icom --hri /dev/ttyUSB0 --civ-address 88
+python hri200_cat.py COM11                        # auto-detect
+python hri200_cat.py COM11 --proto kenwood        # force TS-2000
+python hri200_cat.py COM11 --proto yaesu          # force FT-817/857
+python hri200_cat.py COM11 --proto civ --civ-address 88
 ```
 
-`hri200_radio.py` holds the backends. Each implements the same handful
-of questions — retune, key, read the meter — so the bridge and the GUI
-never learn which one is in use.
+| `--proto` | Dialect | What answers | Software that wants it |
+| --- | --- | --- | --- |
+| `kenwood` | ASCII, `FA00014485000;` | TS-2000 profile | flrig, fldigi, WSJT-X, HRD |
+| `yaesu` | 5-byte binary, `0x03` opcode | FT-817/857 profile | legacy Yaesu profiles |
+| `civ` | Icom CI-V, `FE FE .. FD` | IC-706/7300-shaped | Icom-oriented software |
+| `auto` | — | picks from the traffic | when you do not know |
 
-| `--radio` | Dialect | Default baud | Meter | Power |
-| --- | --- | --- | --- | --- |
-| `hri200` | the box's own protocol | 38400 | 4 coarse steps | high/mid/low |
-| `yaesu` | 5-byte binary CAT (FT-817/818/857/897) | 9600 | no | yes |
-| `kenwood` | ASCII CAT (TS-2000, FT-991, FTDX) | 38400 | yes | yes, in watts |
-| `icom` | CI-V (IC-706/7100/7300/9700) | 19200 | yes | no |
+`auto` is safe because the dialects do not overlap: CI-V frames start
+with `0xFE`, Kenwood commands are ASCII letters, and a Yaesu frame is
+five bytes of neither. Until something decisive arrives nothing is sent,
+because a wrong guess means a stream of bytes the other end will not
+understand, while silence costs one timeout and a retry — which every CAT
+client survives.
 
-Things worth knowing before trusting one of these:
+Things worth knowing:
 
 - **The Yaesu 5-byte dialect has four BCD bytes for the frequency.** In
-  Hz that stops at 99.999999 MHz, which is below every 2 m channel. The
-  radios in the field reach 145 MHz over the same protocol, so above
-  100 MHz the field is treated as 10 Hz steps. Which one a given radio
-  expects is a question for the radio: if it lands on a frequency a
-  tenth of the way there, this is why. `--radiobaud` and the `unit`
-  argument of `yaesu_freq_frame` are the knobs.
-- **Kenwood power is in watts, the bridge thinks in steps.** `high`,
-  `mid` and `low` become 50, 20 and 5 W. That is a convention, not a
-  reading of the radio's rating.
-- **Icom has no power control in CI-V** that all models share, so the
-  power field is ignored rather than guessed at.
-- **The HRI-200 backend still needs its seven-second warm-up**, because
-  that is what the box wants; the others do not wait.
-- **Nothing is transmitted to find out whether a radio is there.** Every
-  backend opens its port, sends what it was told to send and listens. A
-  wrong baud rate costs a timeout, not a carrier.
+  Hz that stops at 99.999999 MHz, which is below every 2 m channel.
+  Legacy radios do reach 145 MHz over that protocol, so above 100 MHz the
+  field is written in 10 Hz steps. If a client lands a tenth of the way
+  there, `--yaesu-unit 10` (or `1`) settles it.
+- **Kenwood power is in watts; the box thinks in steps.** `high`, `mid`
+  and `low` become 50, 20 and 5 W. That is a convention, not a reading of
+  the radio's rating.
+- **CI-V has no power control** that all models share, so that command is
+  not offered rather than answered with a plausible number.
+- **A Yaesu radio stays silent on an opcode it does not know**, and this
+  emulation does the same. Kenwood says `?;`, CI-V says `FB`. The
+  difference matters when reading a log.
+- **`auto` never changes once it has decided.** Restart the bridge to try
+  another dialect, or pick one with `--proto` and skip the guessing.
 
-## Control panel
+## Control panels
 
-`hri200_gui.py` puts the same thing on a screen: pick the backend and
-port, connect, set the channel, hold PTT, watch the meter, and start the
-TS-2000 server for flrig if you want it.
+`hri200_gui.py` puts the CAT bridge on a screen: open the box, set the
+channel, hold PTT, watch the meter, and open the virtual CAT port in
+whichever dialect the software expects.
 
 ```
 python3 hri200_gui.py
-python3 hri200_gui.py --radio yaesu --port /dev/ttyUSB0 --freq 145.5
+python3 hri200_gui.py --hri /dev/ttyUSB0 --proto kenwood --freq 145.5
 ```
 
-The log pane shows the frames that were exchanged, which is the fastest
-way to tell a wrong baud rate from a radio that is not answering.
-Nothing in the window needs the GUI to be trusted: every control maps to
-one call the command line tools make as well.
+`hri200_ysf_gui.py` does the same for the YSF gateway: reflector,
+callsign, channel, DG-ID, and a status line that shows what is arriving
+from the reflector and what is going out to the radio.
+
+```
+python3 hri200_ysf_gui.py
+python3 hri200_ysf_gui.py --call DL4JC --host ysf.example.org --port 42000
+```
+
+A gateway is the case where a window earns its place: the interesting
+information is a stream of small numbers that change while you watch, and
+the command line version prints them once every five seconds. The
+"dry run" checkbox skips the serial port entirely, so the reflector side
+can be tried with no radio on the desk.
+
+Both panes show the programs' own output rather than a rewritten summary
+of it, so anything printed there can also be found in the console
+version, and nothing in either window needs the GUI to be trusted: every
+control maps to one call the command line tools make as well.
 
 ## Applications
 
@@ -155,11 +169,14 @@ CI builds a self-contained program per platform, with the Python
 runtime and pyserial inside, so the machine with the radio needs no
 Python:
 
+Every archive holds one folder with three programs in it: the two
+control panels and the console bridge.
+
 | Platform | Delivered as |
 | --- | --- |
-| Windows | `HRI-200-bridge-<ver>-windows-x86_64.zip` — `hri200-gui.exe` plus the console bridge |
-| Linux | `HRI-200-bridge-<ver>-linux-x86_64.tar.gz` — both binaries, a `.desktop` file and `install.sh` |
-| macOS | `HRI-200-bridge-<ver>-macos-<arch>.zip` — `HRI-200 bridge.app` plus the console bridge |
+| Windows | `HRI-200-bridge-<ver>-windows-x86_64.zip` — `hri200-gui.exe`, `hri200-ysf-gui.exe`, `hri200-bridge.exe` |
+| Linux | `HRI-200-bridge-<ver>-linux-x86_64.tar.gz` — the three binaries, two `.desktop` files, `hri200.png` and `install.sh` |
+| macOS | `HRI-200-bridge-<ver>-macos-<arch>.zip` — `HRI-200 bridge.app`, `HRI-200 YSF gateway.app` and the console bridge |
 
 To build the one for the machine you are on:
 
@@ -687,17 +704,18 @@ setting, and diff the `IRP_MJ_WRITE` lines. Captures in plain text are
 far more useful than binary formats.
 
 Before sending a change, `make test` has to pass. Everything it runs
-works without a radio: the frame encoders are compared against values
-worked out by hand, the TS-2000 server is driven over a pseudo
-terminal, and the generic backends are run against a pretend Kenwood.
-Anything that needs real hardware belongs in `tools/`, where the
-probes live that are meant to be run once and read carefully.
+works without hardware: the dialect encodings are compared against
+values worked out by hand, and the CAT server is driven over a pseudo
+terminal with all four protocol choices. Anything that needs the real
+box belongs in `tools/`, where the probes live that are meant to be run
+once and read carefully.
 
-For a new radio dialect, the pieces are a frame builder per command, a
-backend class in `hri200_radio.py`, an entry in `BACKENDS`, and a
-table row in the README naming what the radio can and cannot do. Say
-which is which — a backend that silently reports S0 because the radio
-has no meter is fine, one that invents a number is not.
+For a new dialect, the pieces are the frame builders as pure functions,
+a protocol class in `hri200_proto.py` with `feed()` and `looks_like()`,
+an entry in `PROTOCOLS`, a line in `detect()`, and a table row in the
+README naming what the emulation does and does not answer. Say which is
+which: a protocol that stays silent on a command it does not implement
+is honest, one that answers with a plausible number is not.
 
 ## Licence
 

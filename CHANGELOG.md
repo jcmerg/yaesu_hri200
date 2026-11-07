@@ -4,6 +4,73 @@ All notable changes to this project. The version numbers match the
 release tags; `packaging/make_dist.py` puts the same number in the
 archive names.
 
+## 2.0 — 2026-11-07
+
+The right idea, this time. 1.0 and 1.1 went the wrong way round: they
+drove *other* radios over their own CAT ports and left the HRI-200 as one
+option among several. That is backwards. The box is the radio - it is
+the thing with the sound card and the PTT - and what has to vary is what
+the software on the other side is told it is talking to.
+
+### Changed
+
+- **`hri200_proto.py` replaces `hri200_radio.py`.** Three CAT dialects
+  are now emulated *on the virtual port*, all driven by the same HRI-200:
+
+  | `--proto` | Dialect | Emulates |
+  | --- | --- | --- |
+  | `kenwood` | ASCII, `FA00014485000;` | TS-2000 profile |
+  | `yaesu` | 5-byte binary | FT-817/857 profile |
+  | `civ` | Icom CI-V, `FE FE .. FD` | IC-706/7300-shaped |
+  | `auto` | picks from the traffic | — |
+
+- **`--proto`, `--civ-address` and `--yaesu-unit`** replace `--radio` and
+  `--radiobaud`. `--proto` defaults to `auto`.
+- **Auto-detection.** CI-V frames start with `0xFE`, Kenwood commands are
+  ASCII letters, and a Yaesu frame is five bytes of neither, so the three
+  cannot be confused. Nothing is sent until the dialect is known: a wrong
+  guess is a stream of bytes the other end will not understand, while
+  silence costs one timeout and a retry.
+- The CAT server class is now `CatServer` and takes a protocol object.
+  Its `pump()` and `serve()` remain, so the GUI still drives it without
+  owning a thread.
+- The control panel offers the dialect as a dropdown instead of a radio
+  type, and opens the CAT port as a separate step from the box.
+
+### Notes
+
+- `hri200_radio.py` and `tests/test_radio_serial.py` are gone. What was
+  worth keeping from them - the encodings and the checks that pin them -
+  lives in `hri200_proto.py` and `tests/test_radio_frames.py`.
+- The Yaesu frequency field still has four BCD bytes, so above 100 MHz it
+  is written in 10 Hz steps; `--yaesu-unit` overrides the guess.
+
+## 1.1 — 2026-11-07
+
+### Added
+
+- **`hri200_ysf_gui.py`** — control panel for the YSF gateway: reflector,
+  callsign, channel, DG-ID, the optional node identification and GPS
+  pass-through, and a status line with what arrives from the reflector
+  and what goes out to the radio. A dry-run switch skips the serial port
+  so the reflector side can be tried without hardware.
+- The YSF panel ships as a second application:
+  `HRI-200 YSF gateway.app` on macOS, `hri200-ysf-gui` elsewhere, with
+  its own `.desktop` entry.
+- `tests/test_ysf_gui_smoke.py` builds both panels and runs the gateway
+  in dry-run mode against the loopback reflector. Each panel is built in
+  its own process, because Tk on macOS does not survive two roots in one
+  interpreter.
+
+### Changed
+
+- Every archive now holds a single top folder, the same name on all three
+  platforms, so unpacking never scatters files into the current
+  directory. The macOS archive is built by running `ditto` on that
+  folder, which keeps the symlinks in both bundles intact.
+- The macOS packaging check in CI verifies the signature of every app in
+  the unpacked archive, not just the bridge.
+
 ## 1.0 — 2026-11-07
 
 First release with a packaged application. Until now this was a set of

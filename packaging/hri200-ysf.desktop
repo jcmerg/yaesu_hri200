@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=HRI-200 YSF gateway
+GenericName=YSF reflector gateway
+Comment=Link a YSF reflector to the radio in C4FM
+Exec=hri200-ysf-gui
+Icon=hri200
+Terminal=false
+Categories=HamRadio;Network;Utility;
+Keywords=hamradio;amateur;radio;ysf;fusion;reflector;wires-x;
+StartupNotify=true
+StartupWMClass=hri200-ysf-gui

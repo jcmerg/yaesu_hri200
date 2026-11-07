@@ -33,12 +33,12 @@ jobs:
         run: python tests/test_radio_frames.py
       - name: CAT server
         run: python tests/test_cat_server.py
-      - name: backends over a pseudo terminal
-        run: python tests/test_radio_serial.py
       - name: YSF frame encoders
         run: python tests/test_ysf_frame.py
       - name: node identification
         run: python tests/test_node_id.py
+      - name: control panels build
+        run: python tests/test_ysf_gui_smoke.py
 
   build:
     name: app for ${{ matrix.artifact }}
@@ -87,11 +87,15 @@ jobs:
           # and calls damaged. Check the archive, not the build tree.
           tmp=$(mktemp -d)
           unzip -q out/*.zip -d "$tmp"
-          codesign --verify --deep --strict "$tmp/HRI-200 bridge.app"
-          links=$(find "$tmp/HRI-200 bridge.app" -type l | wc -l)
-          echo "symlinks in the unpacked bundle: $links"
+          root="$tmp/HRI-200-bridge-"*
+          for app in "$root"/HRI-200*.app; do
+            codesign --verify --deep --strict "$app"
+            echo "signature ok: $app"
+          done
+          links=$(find "$root" -type l | wc -l)
+          echo "symlinks in the unpacked bundles: $links"
           test "$links" -gt 0
-          test "$(find "$tmp/HRI-200 bridge.app" -name '._*' | wc -l)" -eq 0
+          test "$(find "$root" -name '._*' | wc -l)" -eq 0
       - name: the bridge starts
         shell: bash
         run: |
